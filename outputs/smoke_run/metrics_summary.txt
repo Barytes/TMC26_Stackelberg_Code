@@ -1,0 +1,11 @@
+run_name = smoke_run
+n_users = 20
+n_trials = 1
+seed = 2026
+pE_range = [0.1, 0.5], points=3
+pN_range = [0.1, 0.5], points=3
+metrics = esp_potential_revenue, mean_cost_gap_local_minus_offload, mean_unconstrained_offload_cost, nsp_potential_revenue, potential_offload_ratio
+stackelberg_enabled = True
+
+Metric surfaces are simulation-based diagnostics.
+Stackelberg algorithm outputs (if enabled) are saved as stackelberg_*.{txt,csv}.

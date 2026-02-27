@@ -1,0 +1,10 @@
+Stackelberg guided search result (Algorithm 5)
+price = (0.5, 0.5)
+epsilon = 0
+offloading_users = 0/20 (0.00%)
+social_cost = 24.30946309
+esp_revenue = 0
+nsp_revenue = 0
+inner_converged = True
+inner_iterations = 0
+search_steps = 1
