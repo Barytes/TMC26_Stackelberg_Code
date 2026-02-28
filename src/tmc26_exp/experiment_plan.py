@@ -36,7 +36,8 @@ def build_detailed_plan(cfg: ExperimentConfig) -> ExperimentPlan:
                 "GSSE",
                 "CS",
                 "UBRD",
-                "URA",
+                "VI",
+                "PEN",
                 "GSO",
                 "PBRD",
                 "BO",
@@ -199,4 +200,3 @@ if __name__ == "__main__":
     main()
 """
     out_path.write_text(script, encoding="utf-8")
-

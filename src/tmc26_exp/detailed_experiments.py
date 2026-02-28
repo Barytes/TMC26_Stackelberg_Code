@@ -142,7 +142,7 @@ def run_detailed_experiments(config_path: str, out_dir: Path) -> None:
 
     # A4: candidate family ablation proxy by varying stage-II solver in pricing routines
     rows_a4: list[dict[str, object]] = []
-    for solver in ["DG", "UBRD", "URA"]:
+    for solver in ["DG", "UBRD", "VI", "PEN"]:
         local_base = cfg.baselines.__class__(**{**cfg.baselines.__dict__, "stage2_solver_for_pricing": solver})
         users = sample_users(cfg, rng)
         t0 = time.perf_counter()
@@ -216,4 +216,3 @@ def run_detailed_experiments(config_path: str, out_dir: Path) -> None:
             }
         )
     _write_csv(rows_a7, out_dir / "A7_convergence_trace.csv")
-

@@ -2,9 +2,13 @@ run_name = default_run
 n_users = 100
 n_trials = 10
 seed = 2026
-pE_range = [0.1, 8.0], points=60
-pN_range = [0.1, 8.0], points=60
-metrics = potential_offload_ratio, mean_cost_gap_local_minus_offload, esp_potential_revenue, nsp_potential_revenue, mean_unconstrained_offload_cost
+pE_range = [0.05, 5.0], points=60
+pN_range = [0.05, 5.0], points=60
+metrics = esp_potential_revenue, mean_cost_gap_local_minus_offload, mean_unconstrained_offload_cost, nsp_potential_revenue, potential_offload_ratio
+stackelberg_enabled = True
+baselines_enabled = False
+detailed_plan_emit = True
 
-Note: This run uses infrastructure-only proxy metrics.
-No Stage-I/Stage-II game algorithm or baseline is implemented.
+Metric surfaces are simulation-based diagnostics.
+Stackelberg algorithm outputs (if enabled) are saved as stackelberg_*.{txt,csv}.
+Detailed experiment plan files only describe/prepare heavy runs and are not executed automatically.

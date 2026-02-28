@@ -5,10 +5,10 @@ n_trials = 10
 seed = 2026
 
 [system]
-F = 20.0e9
-B = 50.0e6
-cE = 0.1
-cN = 0.1
+F = 100.0
+B = 40.0
+cE = 0.01
+cN = 0.01
 
 [stackelberg]
 enabled = true
@@ -31,8 +31,8 @@ enabled = false
 random_seed = 2043
 exact_max_users = 16
 stage2_solver_for_pricing = "DG"
-max_price_E = 8.0
-max_price_N = 8.0
+max_price_E = 6.0
+max_price_N = 6.0
 gso_grid_points = 25
 pbdr_grid_points = 31
 pbdr_max_iters = 30
@@ -54,7 +54,14 @@ single_sp_max_iters = 200
 random_offloading_trials = 64
 random_offloading_prob = 0.5
 ubrd_max_iters = 200
-ura_max_iters = 200
+vi_max_iters = 200
+vi_step_size = 0.5
+vi_tol = 1e-5
+penalty_outer_iters = 8
+penalty_inner_iters = 50
+penalty_init_rho = 0.1
+penalty_rho_scale = 4.0
+penalty_tol = 1e-4
 
 [detailed_experiment]
 emit_plan = true
@@ -71,33 +78,34 @@ metrics = [
 ]
 
 [price_grid.pE]
-min = 0.1
-max = 8.0
+min = 0.05
+max = 5.0
 points = 60
 
 [price_grid.pN]
-min = 0.1
-max = 8.0
+min = 0.05
+max = 5.0
 points = 60
 
 [user_distributions.w]
 kind = "uniform"
-low = 1.0e8
-high = 1.0e9
+low = 0.5
+high = 2.5
 
 [user_distributions.d]
 kind = "uniform"
-low = 1.0e6
-high = 5.0e6
+low = 1.0
+high = 10.0
 
 [user_distributions.fl]
-kind = "choice"
-values = [5.0e8, 8.0e8, 1.0e9, 1.2e9]
+kind = "uniform"
+low = 0.5
+high = 1.2
 
 [user_distributions.alpha]
 kind = "uniform"
-low = 1.0
-high = 2.0
+low = 10.0
+high = 15.0
 
 [user_distributions.beta]
 kind = "uniform"
@@ -106,8 +114,8 @@ high = 0.5
 
 [user_distributions.rho]
 kind = "uniform"
-low = 0.2
-high = 1.0
+low = 0.5
+high = 2.0
 
 [user_distributions.varpi]
 kind = "uniform"
@@ -116,10 +124,10 @@ high = 1.2
 
 [user_distributions.kappa]
 kind = "uniform"
-low = 1.0e-28
-high = 5.0e-28
+low = 0.01
+high = 0.05
 
 [user_distributions.sigma]
 kind = "uniform"
-low = 0.8
-high = 5.0
+low = 0.5
+high = 3.0

@@ -91,7 +91,14 @@ class BaselineConfig:
     random_offloading_trials: int
     random_offloading_prob: float
     ubrd_max_iters: int
-    ura_max_iters: int
+    vi_max_iters: int
+    vi_step_size: float
+    vi_tol: float
+    penalty_outer_iters: int
+    penalty_inner_iters: int
+    penalty_init_rho: float
+    penalty_rho_scale: float
+    penalty_tol: float
 
 
 @dataclass(frozen=True)
@@ -216,10 +223,17 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         random_offloading_trials=int(raw.get("random_offloading_trials", 64)),
         random_offloading_prob=float(raw.get("random_offloading_prob", 0.5)),
         ubrd_max_iters=int(raw.get("ubrd_max_iters", 200)),
-        ura_max_iters=int(raw.get("ura_max_iters", 200)),
+        vi_max_iters=int(raw.get("vi_max_iters", 200)),
+        vi_step_size=float(raw.get("vi_step_size", 0.5)),
+        vi_tol=float(raw.get("vi_tol", 1e-5)),
+        penalty_outer_iters=int(raw.get("penalty_outer_iters", 8)),
+        penalty_inner_iters=int(raw.get("penalty_inner_iters", 50)),
+        penalty_init_rho=float(raw.get("penalty_init_rho", 0.1)),
+        penalty_rho_scale=float(raw.get("penalty_rho_scale", 4.0)),
+        penalty_tol=float(raw.get("penalty_tol", 1e-4)),
     )
-    if cfg.stage2_solver_for_pricing not in {"CS", "UBRD", "URA", "DG"}:
-        raise ValueError("stage2_solver_for_pricing must be one of CS/UBRD/URA/DG.")
+    if cfg.stage2_solver_for_pricing not in {"CS", "UBRD", "VI", "PEN", "DG"}:
+        raise ValueError("stage2_solver_for_pricing must be one of CS/UBRD/VI/PEN/DG.")
     if cfg.exact_max_users <= 0:
         raise ValueError("exact_max_users must be positive.")
     if cfg.max_price_E <= stack.initial_pE or cfg.max_price_N <= stack.initial_pN:
@@ -229,6 +243,12 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         raise ValueError("random_offloading_trials must be positive.")
     if not (0 < cfg.random_offloading_prob < 1):
         raise ValueError("random_offloading_prob must be in (0,1).")
+    if cfg.vi_max_iters <= 0 or cfg.penalty_outer_iters <= 0 or cfg.penalty_inner_iters <= 0:
+        raise ValueError("VI/Penalty iteration limits must be positive.")
+    if cfg.vi_step_size <= 0 or cfg.vi_tol <= 0 or cfg.penalty_tol <= 0:
+        raise ValueError("VI/Penalty tolerances and step sizes must be positive.")
+    if cfg.penalty_init_rho <= 0 or cfg.penalty_rho_scale <= 1:
+        raise ValueError("Penalty rho settings must satisfy init_rho > 0 and rho_scale > 1.")
     return cfg
 
 

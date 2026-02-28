@@ -6,6 +6,7 @@ import math
 from typing import Callable
 
 import numpy as np
+from scipy.optimize import minimize, minimize_scalar
 
 from .config import BaselineConfig, StackelbergConfig, SystemConfig
 from .model import UserBatch, local_cost, theta
@@ -79,6 +80,80 @@ def _offload_costs(data: _Data, f: np.ndarray, b: np.ndarray, pE: float, pN: flo
     return ce
 
 
+def _solve_inner_with_numerical_solver(
+    data: _Data,
+    offloading_set: tuple[int, ...],
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if not offloading_set:
+        n = data.cl.size
+        return np.zeros(n, dtype=float), np.zeros(n, dtype=float)
+
+    idx = np.asarray(offloading_set, dtype=int)
+    m = idx.size
+    eps = 1e-8
+
+    # Feasible warm start: uniform split within capacity.
+    x0 = np.concatenate(
+        [
+            np.full(m, max(system.F / max(m, 1), eps), dtype=float),
+            np.full(m, max(system.B / max(m, 1), eps), dtype=float),
+        ]
+    )
+
+    def unpack(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return x[:m], x[m:]
+
+    def objective(x: np.ndarray) -> float:
+        f_loc, b_loc = unpack(x)
+        return float(
+            np.sum(data.aw[idx] / f_loc + data.th[idx] / b_loc + pE * f_loc + pN * b_loc)
+        )
+
+    constraints = [
+        {"type": "ineq", "fun": lambda x: system.F - float(np.sum(x[:m]))},
+        {"type": "ineq", "fun": lambda x: system.B - float(np.sum(x[m:]))},
+    ]
+    for k, i in enumerate(idx):
+        constraints.append(
+            {
+                "type": "ineq",
+                "fun": lambda x, kk=k, ii=i: float(
+                    data.cl[ii]
+                    - (data.aw[ii] / x[kk] + data.th[ii] / x[m + kk] + pE * x[kk] + pN * x[m + kk])
+                ),
+            }
+        )
+
+    bounds = [(eps, system.F)] * m + [(eps, system.B)] * m
+    res = minimize(
+        objective,
+        x0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 300, "ftol": 1e-9, "disp": False},
+    )
+    if not res.success:
+        return None
+
+    f_sol, b_sol = unpack(np.asarray(res.x, dtype=float))
+    # Final feasibility guard.
+    if np.sum(f_sol) > system.F + 1e-6 or np.sum(b_sol) > system.B + 1e-6:
+        return None
+    ce = data.aw[idx] / f_sol + data.th[idx] / b_sol + pE * f_sol + pN * b_sol
+    if np.any(ce > data.cl[idx] + 1e-6):
+        return None
+
+    f = np.zeros(data.cl.size, dtype=float)
+    b = np.zeros(data.cl.size, dtype=float)
+    f[idx] = f_sol
+    b[idx] = b_sol
+    return f, b
+
+
 def _evaluate(
     users: UserBatch,
     offloading_set: tuple[int, ...],
@@ -112,6 +187,106 @@ def _evaluate(
     )
 
 
+def _build_outcome_from_allocations(
+    users: UserBatch,
+    f: np.ndarray,
+    b: np.ndarray,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    name: str,
+    meta: dict[str, float | int | str] | None = None,
+) -> BaselineOutcome:
+    data = _build_data(users)
+    ce = _offload_costs(data, f, b, pE, pN)
+    offloading_set = _sorted_tuple(tuple(int(i) for i in np.flatnonzero(np.isfinite(ce))))
+    off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+    loc_idx = np.asarray([i for i in range(users.n) if i not in set(offloading_set)], dtype=int)
+    social = float(np.sum(ce[off_idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+    rev_e = float((pE - system.cE) * np.sum(f[off_idx])) if off_idx.size else 0.0
+    rev_n = float((pN - system.cN) * np.sum(b[off_idx])) if off_idx.size else 0.0
+    gE = algorithm_3_gain_approximation(users, offloading_set, pE, pN, "E", system).gain
+    gN = algorithm_3_gain_approximation(users, offloading_set, pE, pN, "N", system).gain
+    return BaselineOutcome(
+        name=name,
+        price=(float(pE), float(pN)),
+        offloading_set=offloading_set,
+        social_cost=social,
+        esp_revenue=rev_e,
+        nsp_revenue=rev_n,
+        epsilon_proxy=float(max(gE, gN)),
+        meta=meta or {},
+    )
+
+
+def _repair_to_capacity(
+    data: _Data,
+    f: np.ndarray,
+    b: np.ndarray,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    f_out = np.asarray(f, dtype=float).copy()
+    b_out = np.asarray(b, dtype=float).copy()
+    ce = _offload_costs(data, f_out, b_out, pE, pN)
+    mask = np.isfinite(ce)
+    if not np.any(mask):
+        return f_out, b_out
+
+    while np.sum(f_out[mask]) > system.F + 1e-9 or np.sum(b_out[mask]) > system.B + 1e-9:
+        idx = np.flatnonzero(mask)
+        gains = data.cl[idx] - ce[idx]
+        drop = int(idx[np.argmin(gains)])
+        f_out[drop] = 0.0
+        b_out[drop] = 0.0
+        ce[drop] = np.inf
+        mask[drop] = False
+        if not np.any(mask):
+            break
+
+    return f_out, b_out
+
+
+def _vi_response_from_multipliers(
+    data: _Data,
+    lambda_F: float,
+    lambda_B: float,
+    pE: float,
+    pN: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    n = data.cl.size
+    f = np.zeros(n, dtype=float)
+    b = np.zeros(n, dtype=float)
+    tE = pE + max(lambda_F, 0.0)
+    tN = pN + max(lambda_B, 0.0)
+    augmented = 2.0 * np.sqrt(data.aw * tE) + 2.0 * np.sqrt(data.th * tN)
+    off_idx = np.flatnonzero(augmented < data.cl)
+    if off_idx.size:
+        f[off_idx] = np.sqrt(data.aw[off_idx] / max(tE, 1e-12))
+        b[off_idx] = np.sqrt(data.th[off_idx] / max(tN, 1e-12))
+    return f, b
+
+
+def _penalty_axis_best_response(
+    a: float,
+    price: float,
+    residual: float,
+    capacity: float,
+    rho: float,
+) -> float:
+    eps = 1e-8
+    upper = max(2.0 * capacity, 2.0 * math.sqrt(max(a, eps) / max(price, eps)), 1.0)
+
+    def objective(x: float) -> float:
+        overflow = max(0.0, residual + x - capacity)
+        return a / x + price * x + 0.5 * rho * (overflow ** 2)
+
+    res = minimize_scalar(objective, bounds=(eps, upper), method="bounded", options={"xatol": 1e-6})
+    x_best = float(res.x if res.success else math.sqrt(max(a, eps) / max(price, eps)))
+    return min(max(x_best, eps), upper)
+
+
 def baseline_stage2_centralized_solver(
     users: UserBatch,
     pE: float,
@@ -131,18 +306,19 @@ def baseline_stage2_centralized_solver(
 
     for bits in itertools.product([0, 1], repeat=users.n):
         current = tuple(i for i, bit in enumerate(bits) if bit == 1)
-        f, b = _set_allocations(data, current, pE, pN, system)
+        alloc = _solve_inner_with_numerical_solver(data, current, pE, pN, system)
+        if alloc is None:
+            continue
+        f, b = alloc
         ce = _offload_costs(data, f, b, pE, pN)
-        if current:
-            idx = np.asarray(current, dtype=int)
-            if np.any(ce[idx] > data.cl[idx] + 1e-9):
-                continue
-        out = _evaluate(users, current, pE, pN, system, stack_cfg, "tmp")
-        if out.social_cost < best_social:
-            best_social = out.social_cost
+        idx = np.asarray(current, dtype=int) if current else np.asarray([], dtype=int)
+        loc_idx = np.asarray([i for i in range(users.n) if i not in set(current)], dtype=int)
+        social = float(np.sum(ce[idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+        if social < best_social:
+            best_social = social
             best_set = current
 
-    return _evaluate(
+    out = _evaluate(
         users,
         best_set,
         pE,
@@ -150,8 +326,9 @@ def baseline_stage2_centralized_solver(
         system,
         stack_cfg,
         "CS",
-        meta={"searched_sets": int(2**users.n)},
+        meta={"searched_sets": int(2**users.n), "solver": "scipy_slsqp"},
     )
+    return out
 
 
 def baseline_stage2_ubrd(
@@ -163,13 +340,14 @@ def baseline_stage2_ubrd(
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
     data = _build_data(users)
-    off = set(i for i in range(users.n) if 2.0 * math.sqrt(data.aw[i] * pE) + 2.0 * math.sqrt(data.th[i] * pN) < data.cl[i])
+    rng = np.random.default_rng(base_cfg.random_seed + users.n)
+    off: set[int] = set()
     changed = True
     rounds = 0
     while changed and rounds < base_cfg.ubrd_max_iters:
         changed = False
         rounds += 1
-        for i in range(users.n):
+        for i in rng.permutation(users.n):
             with_i = _sorted_tuple(list(off | {i}))
             w_f, w_b = _set_allocations(data, with_i, pE, pN, system)
             ce_with = _offload_costs(data, w_f, w_b, pE, pN)[i]
@@ -180,10 +358,19 @@ def baseline_stage2_ubrd(
             if (not should_offload) and i in off:
                 off.remove(i)
                 changed = True
-    return _evaluate(users, _sorted_tuple(list(off)), pE, pN, system, stack_cfg, "UBRD", meta={"rounds": rounds})
+    return _evaluate(
+        users,
+        _sorted_tuple(list(off)),
+        pE,
+        pN,
+        system,
+        stack_cfg,
+        "UBRD",
+        meta={"rounds": rounds, "init": "empty_set", "order": "random_per_round"},
+    )
 
 
-def baseline_stage2_ura(
+def baseline_stage2_vi(
     users: UserBatch,
     pE: float,
     pN: float,
@@ -192,34 +379,141 @@ def baseline_stage2_ura(
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
     data = _build_data(users)
-    off = set(range(users.n))
-    rounds = 0
-    changed = True
-    while changed and rounds < base_cfg.ura_max_iters:
-        rounds += 1
-        changed = False
-        if not off:
+    lambda_F = 0.0
+    lambda_B = 0.0
+    previous_set: tuple[int, ...] | None = None
+    total_iters = base_cfg.vi_max_iters
+    best_f = np.zeros(users.n, dtype=float)
+    best_b = np.zeros(users.n, dtype=float)
+    best_lambda_F = 0.0
+    best_lambda_B = 0.0
+    best_score = (float("inf"), float("inf"))
+
+    for t in range(base_cfg.vi_max_iters):
+        f, b = _vi_response_from_multipliers(data, lambda_F, lambda_B, pE, pN)
+        current_set = _sorted_tuple(tuple(int(i) for i in np.flatnonzero((f > 0) & (b > 0))))
+        excess_F = float(np.sum(f) - system.F)
+        excess_B = float(np.sum(b) - system.B)
+        ce = _offload_costs(data, f, b, pE, pN)
+        off_idx = np.asarray(current_set, dtype=int) if current_set else np.asarray([], dtype=int)
+        loc_idx = np.asarray([i for i in range(users.n) if i not in set(current_set)], dtype=int)
+        actual_social = float(np.sum(ce[off_idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+        score = (max(0.0, excess_F, excess_B), actual_social)
+        if score < best_score:
+            best_score = score
+            best_f = f.copy()
+            best_b = b.copy()
+            best_lambda_F = lambda_F
+            best_lambda_B = lambda_B
+        step = base_cfg.vi_step_size / math.sqrt(t + 1.0)
+        next_lambda_F = max(0.0, lambda_F + step * excess_F)
+        next_lambda_B = max(0.0, lambda_B + step * excess_B)
+        stable_set = previous_set == current_set
+        if (
+            stable_set
+            and max(abs(next_lambda_F - lambda_F), abs(next_lambda_B - lambda_B), max(0.0, excess_F), max(0.0, excess_B))
+            <= base_cfg.vi_tol
+        ):
+            lambda_F = next_lambda_F
+            lambda_B = next_lambda_B
+            total_iters = t + 1
             break
-        f_u = system.F / len(off)
-        b_u = system.B / len(off)
-        leave = {i for i in off if (data.aw[i] / f_u + data.th[i] / b_u + pE * f_u + pN * b_u) >= data.cl[i]}
-        if leave:
-            off -= leave
-            changed = True
-        join = {
-            i
-            for i in range(users.n)
-            if i not in off
-            and (data.aw[i] / max(system.F / max(len(off) + 1, 1), 1e-12)
-                 + data.th[i] / max(system.B / max(len(off) + 1, 1), 1e-12)
-                 + pE * (system.F / max(len(off) + 1, 1))
-                 + pN * (system.B / max(len(off) + 1, 1)))
-            < data.cl[i]
-        }
-        if join:
-            off |= join
-            changed = True
-    return _evaluate(users, _sorted_tuple(list(off)), pE, pN, system, stack_cfg, "URA", meta={"rounds": rounds})
+        lambda_F = next_lambda_F
+        lambda_B = next_lambda_B
+        previous_set = current_set
+
+    f = best_f
+    b = best_b
+    before_repair = int(np.count_nonzero((f > 0) & (b > 0)))
+    f, b = _repair_to_capacity(data, f, b, pE, pN, system)
+    after_repair = int(np.count_nonzero((f > 0) & (b > 0)))
+    return _build_outcome_from_allocations(
+        users,
+        f,
+        b,
+        pE,
+        pN,
+        system,
+        "VI",
+        meta={
+            "iters": total_iters,
+            "lambda_F": round(best_lambda_F, 6),
+            "lambda_B": round(best_lambda_B, 6),
+            "repaired_drop": before_repair - after_repair,
+        },
+    )
+
+
+def baseline_stage2_penalty(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    data = _build_data(users)
+    rng = np.random.default_rng(base_cfg.random_seed + 509 + users.n)
+    f = np.zeros(users.n, dtype=float)
+    b = np.zeros(users.n, dtype=float)
+    rho = base_cfg.penalty_init_rho
+    total_rounds = 0
+    outer_used = 0
+
+    for outer in range(base_cfg.penalty_outer_iters):
+        outer_used = outer + 1
+        for _inner in range(base_cfg.penalty_inner_iters):
+            total_rounds += 1
+            changed = False
+            for i in rng.permutation(users.n):
+                residual_F = float(np.sum(f) - f[i])
+                residual_B = float(np.sum(b) - b[i])
+                local_penalty = 0.5 * rho * (
+                    max(0.0, residual_F - system.F) ** 2 + max(0.0, residual_B - system.B) ** 2
+                )
+                fi = _penalty_axis_best_response(float(data.aw[i]), pE, residual_F, system.F, rho)
+                bi = _penalty_axis_best_response(float(data.th[i]), pN, residual_B, system.B, rho)
+                off_penalty = 0.5 * rho * (
+                    max(0.0, residual_F + fi - system.F) ** 2 + max(0.0, residual_B + bi - system.B) ** 2
+                )
+                penalized_offload = float(data.aw[i] / fi + data.th[i] / bi + pE * fi + pN * bi + off_penalty)
+                penalized_local = float(data.cl[i] + local_penalty)
+                if penalized_offload + 1e-9 < penalized_local:
+                    if abs(f[i] - fi) > 1e-6 or abs(b[i] - bi) > 1e-6:
+                        changed = True
+                    f[i] = fi
+                    b[i] = bi
+                else:
+                    if f[i] > 1e-9 or b[i] > 1e-9:
+                        changed = True
+                    f[i] = 0.0
+                    b[i] = 0.0
+            if not changed:
+                break
+
+        excess = max(0.0, float(np.sum(f) - system.F), float(np.sum(b) - system.B))
+        if excess <= base_cfg.penalty_tol:
+            break
+        rho *= base_cfg.penalty_rho_scale
+
+    before_repair = int(np.count_nonzero((f > 0) & (b > 0)))
+    f, b = _repair_to_capacity(data, f, b, pE, pN, system)
+    after_repair = int(np.count_nonzero((f > 0) & (b > 0)))
+    return _build_outcome_from_allocations(
+        users,
+        f,
+        b,
+        pE,
+        pN,
+        system,
+        "PEN",
+        meta={
+            "outer_iters": outer_used,
+            "br_rounds": total_rounds,
+            "final_rho": round(rho, 6),
+            "repaired_drop": before_repair - after_repair,
+        },
+    )
 
 
 def _stage2_solver(
@@ -235,8 +529,10 @@ def _stage2_solver(
         return baseline_stage2_centralized_solver(users, pE, pN, system, stack_cfg, base_cfg)
     if method == "UBRD":
         return baseline_stage2_ubrd(users, pE, pN, system, stack_cfg, base_cfg)
-    if method == "URA":
-        return baseline_stage2_ura(users, pE, pN, system, stack_cfg, base_cfg)
+    if method == "VI":
+        return baseline_stage2_vi(users, pE, pN, system, stack_cfg, base_cfg)
+    if method == "PEN":
+        return baseline_stage2_penalty(users, pE, pN, system, stack_cfg, base_cfg)
     if method == "DG":
         out = algorithm_2_heuristic_user_selection(users, pE, pN, system, stack_cfg)
         return _evaluate(
@@ -613,7 +909,8 @@ def run_all_baselines(
 
     outcomes.append(proposed_gsse(users, system, stack_cfg))
     outcomes.append(baseline_stage2_ubrd(users, init_pE, init_pN, system, stack_cfg, base_cfg))
-    outcomes.append(baseline_stage2_ura(users, init_pE, init_pN, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage2_vi(users, init_pE, init_pN, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage2_penalty(users, init_pE, init_pN, system, stack_cfg, base_cfg))
     if users.n <= base_cfg.exact_max_users:
         outcomes.append(baseline_stage2_centralized_solver(users, init_pE, init_pN, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_grid_search_oracle(users, system, stack_cfg, base_cfg))
@@ -624,4 +921,3 @@ def run_all_baselines(
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_random_offloading(users, system, stack_cfg, base_cfg))
     return outcomes
-

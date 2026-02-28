@@ -14,9 +14,11 @@ Implemented algorithms:
 5. Guided search for Stackelberg equilibrium over offloading user sets
 
 Implemented baselines:
-1. Stage-II baselines: `CS`, `UBRD`, `URA`
+1. Stage-II baselines: `CS`, `UBRD`, `VI`, `PEN`
 2. Stage-I baselines: `GSO`, `PBRD`, `BO`, `DRL`
 3. Strategic-setting baselines: `MarketEquilibrium`, `SingleSP`, `RandomOffloading`
+
+Stage-II derivations for the new GNEP baselines are documented in `docs/stage2_gnep_baselines.md`.
 
 ## 1) Environment
 
@@ -91,6 +93,48 @@ Detailed plan outputs (when `[detailed_experiment].emit_plan = true` or `--emit-
 - `detailed_plan/detailed_experiment_plan.md`
 - `detailed_plan/detailed_experiment_plan.json`
 - `detailed_plan/run_detailed_experiments.py` (runner stub, not auto-executed)
+
+## 6) Run The Detailed Experiment Plan
+
+Use high-compute CPU servers for this section.
+
+### Step 1: Generate plan files only
+
+```bash
+uv run tmc26-exp --config configs/default.toml --emit-detailed-plan
+```
+
+This writes plan files under:
+`outputs/<run_name>/detailed_plan/`
+
+### Step 2: Execute the detailed experiments (manual)
+
+After Step 1, run the generated stub on the server:
+
+```bash
+uv run python outputs/default_run/detailed_plan/run_detailed_experiments.py \
+  --config configs/default.toml \
+  --outdir outputs/default_run/detailed_exec
+```
+
+Or call the module directly:
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+from tmc26_exp.detailed_experiments import run_detailed_experiments
+run_detailed_experiments("configs/default.toml", Path("outputs/default_run/detailed_exec"))
+PY
+```
+
+Main outputs include:
+- `A1_core_comparison.csv`
+- `A2_gain_fidelity.csv`
+- `A3_L_sensitivity.csv`
+- `A4_candidate_family_ablation.csv`
+- `A5_scalability.csv`
+- `A6_robustness.csv`
+- `A7_convergence_trace.csv`
 
 ## 5) Configuration
 

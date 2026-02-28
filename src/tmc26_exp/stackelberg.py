@@ -5,6 +5,7 @@ import math
 from typing import Iterable, Literal
 
 import numpy as np
+from scipy.optimize import minimize
 
 from .config import StackelbergConfig, SystemConfig
 from .model import UserBatch, local_cost, theta
@@ -389,7 +390,9 @@ def algorithm_2_heuristic_user_selection(
     iterations = 0
 
     for t in range(cfg.greedy_max_iters):
-        inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
+        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+        if inner is None:
+            inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
         ve = inner.offloading_objective
 
         if t >= 1 and last_added is not None:
@@ -397,7 +400,9 @@ def algorithm_2_heuristic_user_selection(
             if delta_true >= 0.0:
                 offloading_set.discard(last_added)
                 active_users.discard(last_added)
-                inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
+                inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+                if inner is None:
+                    inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
                 ve = inner.offloading_objective
 
         candidates = sorted(active_users - offloading_set)
@@ -432,7 +437,9 @@ def algorithm_2_heuristic_user_selection(
         iterations = t + 1
         break
 
-    final_inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
+    final_inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+    if final_inner is None:
+        final_inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
     final_set = final_inner.offloading_set
     outside = set(range(users.n)) - set(final_set)
     social_cost = final_inner.offloading_objective + float(np.sum(data.cl[list(outside)])) if outside else final_inner.offloading_objective
@@ -527,6 +534,111 @@ def _sample_directions(count: int) -> list[tuple[float, float]]:
     # Midpoint sampling avoids exactly axis-aligned duplicates.
     angles = (np.arange(count, dtype=float) + 0.5) * (0.5 * math.pi / count)
     return [(float(math.cos(a)), float(math.sin(a))) for a in angles]
+
+
+def _solve_fixed_set_inner_exact(
+    users: UserBatch,
+    offloading_set: Iterable[int],
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> InnerSolveResult | None:
+    data = _build_data(users)
+    chosen = _sorted_tuple(offloading_set)
+    n_users = users.n
+    f = np.zeros(n_users, dtype=float)
+    b = np.zeros(n_users, dtype=float)
+    mu = np.zeros(n_users, dtype=float)
+
+    if not chosen:
+        return InnerSolveResult(
+            offloading_set=chosen,
+            f=f,
+            b=b,
+            lambda_F=0.0,
+            lambda_B=0.0,
+            mu=mu,
+            offloading_objective=0.0,
+            converged=True,
+            iterations=0,
+        )
+
+    idx = np.asarray(chosen, dtype=int)
+    m = idx.size
+    eps = 1e-8
+
+    tE, tN = _tilde_prices(data, chosen, pE, pN, system)
+    x0 = np.concatenate(
+        [
+            np.clip(np.sqrt(data.aw[idx] / max(tE, eps)), eps, system.F),
+            np.clip(np.sqrt(data.th[idx] / max(tN, eps)), eps, system.B),
+        ]
+    )
+
+    def unpack(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return x[:m], x[m:]
+
+    def objective(x: np.ndarray) -> float:
+        f_loc, b_loc = unpack(x)
+        return float(np.sum(data.aw[idx] / f_loc + data.th[idx] / b_loc + pE * f_loc + pN * b_loc))
+
+    constraints: list[dict[str, object]] = [
+        {"type": "ineq", "fun": lambda x: system.F - float(np.sum(x[:m]))},
+        {"type": "ineq", "fun": lambda x: system.B - float(np.sum(x[m:]))},
+    ]
+    for k, i in enumerate(idx):
+        constraints.append(
+            {
+                "type": "ineq",
+                "fun": lambda x, kk=k, ii=i: float(
+                    data.cl[ii]
+                    - (data.aw[ii] / x[kk] + data.th[ii] / x[m + kk] + pE * x[kk] + pN * x[m + kk])
+                ),
+            }
+        )
+
+    bounds = [(eps, system.F)] * m + [(eps, system.B)] * m
+    res = minimize(
+        objective,
+        x0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 300, "ftol": 1e-9, "disp": False},
+    )
+    if not res.success:
+        return None
+
+    f_sol, b_sol = unpack(np.asarray(res.x, dtype=float))
+    ce = data.aw[idx] / f_sol + data.th[idx] / b_sol + pE * f_sol + pN * b_sol
+    if np.sum(f_sol) > system.F + 1e-6 or np.sum(b_sol) > system.B + 1e-6:
+        return None
+    if np.any(ce > data.cl[idx] + 1e-6):
+        return None
+
+    f[idx] = f_sol
+    b[idx] = b_sol
+
+    raw_multipliers = np.atleast_1d(np.asarray(getattr(res, "multipliers", np.zeros(2 + m)), dtype=float))
+    multipliers = np.zeros(2 + m, dtype=float)
+    used = min(multipliers.size, raw_multipliers.size)
+    multipliers[:used] = raw_multipliers[:used]
+
+    lambda_F = float(max(multipliers[0], 0.0))
+    lambda_B = float(max(multipliers[1], 0.0))
+    mu[idx] = np.maximum(multipliers[2 : 2 + m], 0.0)
+
+    return InnerSolveResult(
+        offloading_set=chosen,
+        f=f,
+        b=b,
+        lambda_F=lambda_F,
+        lambda_B=lambda_B,
+        mu=mu,
+        offloading_objective=float(np.sum(ce)),
+        converged=True,
+        iterations=int(getattr(res, "nit", 0)),
+    )
 
 
 def algorithm_4_optimal_rne_sampling(
@@ -682,4 +794,3 @@ def summarize_stackelberg_result(
         f"search_steps = {len(result.trajectory)}",
     ]
     return "\n".join(lines) + "\n"
-
