@@ -102,9 +102,9 @@ class BaselineConfig:
     # MINLP solver settings for CS baseline
     cs_use_minlp: bool
     cs_fallback_to_enum: bool
-    bonmin_time_limit: int
-    bonmin_algorithm: str
-    bonmin_mip_gap: float
+    gekko_time_limit: int
+    gekko_max_iter: int
+    gekko_mip_gap: float
 
 
 @dataclass(frozen=True)
@@ -240,9 +240,9 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         # MINLP solver settings
         cs_use_minlp=bool(raw.get("cs_use_minlp", True)),
         cs_fallback_to_enum=bool(raw.get("cs_fallback_to_enum", True)),
-        bonmin_time_limit=int(raw.get("bonmin_time_limit", 300)),
-        bonmin_algorithm=str(raw.get("bonmin_algorithm", "B-BB")),
-        bonmin_mip_gap=float(raw.get("bonmin_mip_gap", 1e-4)),
+        gekko_time_limit=int(raw.get("gekko_time_limit", 300)),
+        gekko_max_iter=int(raw.get("gekko_max_iter", 500)),
+        gekko_mip_gap=float(raw.get("gekko_mip_gap", 1e-4)),
     )
     if cfg.stage2_solver_for_pricing not in {"CS", "UBRD", "VI", "PEN", "DG"}:
         raise ValueError("stage2_solver_for_pricing must be one of CS/UBRD/VI/PEN/DG.")

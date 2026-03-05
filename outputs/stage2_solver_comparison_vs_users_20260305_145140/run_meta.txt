@@ -1,0 +1,9 @@
+timestamp_utc = 2026-03-05T06:51:52.268601+00:00
+config = configs/default.toml
+pE = 0.5
+pN = 0.5
+user_counts = [8, 10, 12]
+trials = 3
+methods = Algorithm2, UBRD, VI, PEN, CS
+skipped_cs_counts = []
+exact_max_users = 16

@@ -1,0 +1,9 @@
+timestamp_utc = 2026-03-05T06:42:00.562981+00:00
+config = configs/default.toml
+pE = 0.5
+pN = 0.5
+user_counts = [6, 8, 10, 12, 14, 16]
+trials = 10
+exact_max_users = 16
+paper_gap_pct_signed = (V_optimal - V_algorithm2) / V_optimal * 100
+relative_error_pct = (V_algorithm2 - V_optimal) / V_optimal * 100

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run python scripts/compute_real_revenue_contours_parallel.py --config configs/default.toml --workers 4)"
+    ]
+  }
+}

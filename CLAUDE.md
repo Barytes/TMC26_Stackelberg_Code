@@ -3,6 +3,7 @@
 For detailed information about the paper and code, read:
 - `TMC26_Stackelberg.tex` - Full paper with mathematical derivations
 - `README.md` - Paper summary and code usage instructions
+- `PROGRESS.md` - Log of changes and progress (read before starting new work)
 
 ## Behavior Rules
 

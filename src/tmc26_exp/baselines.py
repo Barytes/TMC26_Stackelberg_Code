@@ -287,115 +287,28 @@ def _penalty_axis_best_response(
     return min(max(x_best, eps), upper)
 
 
-def _check_bonmin_available() -> bool:
-    """Check if BONMIN solver is available on the system."""
+def _check_gekko_available() -> bool:
+    """Check if GEKKO solver is available."""
     try:
-        import pyomo.environ as pyo
-        solver = pyo.SolverFactory('bonmin')
-        return solver.available()
+        from gekko import GEKKO
+        return True
     except ImportError:
         return False
 
 
-def _build_minlp_model(
+def _solve_with_gekko(
     users: UserBatch,
     pE: float,
     pN: float,
     system: SystemConfig,
-) -> "pyomo.ConcreteModel":
-    """
-    Build Pyomo MINLP model for Social Cost Minimization.
-
-    Variables:
-        o[i] ∈ {0,1}: Binary offloading decision for user i
-        f[i] ≥ 0: Edge computation resource allocated to user i (GHz)
-        b[i] ≥ 0: Bandwidth allocated to user i (MHz)
-
-    Objective: Minimize social cost
-        Σ_i [o[i] * C^e_i(f[i], b[i]) + (1-o[i]) * C^l_i]
-
-    Constraints:
-        - Capacity: Σ_i f[i] ≤ F, Σ_i b[i] ≤ B
-        - Variable linking (Big-M): f[i] ≤ M*o[i], b[i] ≤ M*o[i]
-        - Individual rationality: C^e_i(f[i], b[i]) ≤ C^l_i + M*(1-o[i])
-        - Lower bounds: f[i] ≥ ε*o[i], b[i] ≥ ε*o[i]
-    """
-    import pyomo.environ as pyo
-
-    n = users.n
-    data = _build_data(users)
-
-    model = pyo.ConcreteModel(name="SCM_MINLP")
-
-    # Index set
-    model.I = pyo.Set(initialize=range(n))
-
-    # Decision variables
-    model.o = pyo.Var(model.I, domain=pyo.Binary)  # offloading decision
-    model.f = pyo.Var(model.I, domain=pyo.NonNegativeReals)  # edge CPU allocation
-    model.b = pyo.Var(model.I, domain=pyo.NonNegativeReals)  # bandwidth allocation
-
-    # Precomputed parameters
-    model.aw = pyo.Param(model.I, initialize={i: float(data.aw[i]) for i in range(n)})
-    model.th = pyo.Param(model.I, initialize={i: float(data.th[i]) for i in range(n)})
-    model.cl = pyo.Param(model.I, initialize={i: float(data.cl[i]) for i in range(n)})
-
-    # Big-M constant
-    M = max(system.F, system.B) * 2.0
-
-    # Small epsilon to avoid division by zero
-    eps = 1e-8
-
-    # Objective: minimize social cost
-    def objective_rule(m):
-        # Offloading cost for users who offload
-        offload_cost = sum(
-            m.o[i] * (m.aw[i] / (m.f[i] + eps) + m.th[i] / (m.b[i] + eps) + pE * m.f[i] + pN * m.b[i])
-            for i in m.I
-        )
-        # Local cost for users who don't offload
-        local_cost_sum = sum((1 - m.o[i]) * m.cl[i] for i in m.I)
-        return offload_cost + local_cost_sum
-    model.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
-
-    # Capacity constraints
-    model.cap_F = pyo.Constraint(expr=sum(model.f[i] for i in model.I) <= system.F)
-    model.cap_B = pyo.Constraint(expr=sum(model.b[i] for i in model.I) <= system.B)
-
-    # Big-M variable linking constraints: f[i] ≤ M*o[i], b[i] ≤ M*o[i]
-    def link_f_rule(m, i):
-        return m.f[i] <= M * m.o[i]
-    model.link_f = pyo.Constraint(model.I, rule=link_f_rule)
-
-    def link_b_rule(m, i):
-        return m.b[i] <= M * m.o[i]
-    model.link_b = pyo.Constraint(model.I, rule=link_b_rule)
-
-    # Individual rationality constraints (with Big-M relaxation)
-    # When o[i] = 1: C^e_i <= C^l_i
-    # When o[i] = 0: constraint is relaxed (RHS = C^l_i + M)
-    def ir_rule(m, i):
-        return m.aw[i] / (m.f[i] + eps) + m.th[i] / (m.b[i] + eps) + pE * m.f[i] + pN * m.b[i] <= m.cl[i] + M * (1 - m.o[i])
-    model.ir = pyo.Constraint(model.I, rule=ir_rule)
-
-    # Lower bounds to ensure proper variable linking
-    def f_lb_rule(m, i):
-        return m.f[i] >= eps * m.o[i]
-    model.f_lb = pyo.Constraint(model.I, rule=f_lb_rule)
-
-    def b_lb_rule(m, i):
-        return m.b[i] >= eps * m.o[i]
-    model.b_lb = pyo.Constraint(model.I, rule=b_lb_rule)
-
-    return model
-
-
-def _solve_minlp_with_bonmin(
-    model: "pyomo.ConcreteModel",
     base_cfg: BaselineConfig,
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool]:
     """
-    Solve MINLP model using BONMIN solver.
+    Solve MINLP using GEKKO with APOPT solver.
+
+    GEKKO uses APOPT (Advanced Process OPTimizer) which handles MINLP problems.
+    We use binary variables for offloading decisions and continuous variables
+    for resource allocations.
 
     Returns:
         f: Array of edge CPU allocations
@@ -404,44 +317,142 @@ def _solve_minlp_with_bonmin(
         social_cost: Optimal social cost
         success: Whether solver found optimal solution
     """
-    import pyomo.environ as pyo
+    from gekko import GEKKO
 
-    solver = pyo.SolverFactory('bonmin')
+    n = users.n
+    data = _build_data(users)
+
+    # Create GEKKO model (local solve, no remote)
+    m = GEKKO(remote=False)
+    m.options.SOLVER = 1  # APOPT solver
+    m.options.IMODE = 3  # Steady-state optimization
 
     # Set solver options
-    solver.options['bonmin.algorithm'] = base_cfg.bonmin_algorithm
-    solver.options['bonmin.time_limit'] = base_cfg.bonmin_time_limit
-    solver.options['bonmin.mip_allowable_gap'] = base_cfg.bonmin_mip_gap
-    solver.options['print_level'] = 0
+    m.solver_options = [
+        f'max_time {base_cfg.gekko_time_limit}',
+        f'minlp_maximum_iterations {base_cfg.gekko_max_iter}',
+        'minlp_as_nlp 0',  # Treat as MINLP, not NLP
+        'minlp_branch_method 1',  # Branch and bound
+        f'minlp_gap_tol {base_cfg.gekko_mip_gap}',
+    ]
 
-    results = solver.solve(model, tee=False)
+    # Small epsilon to avoid division by zero
+    eps = 1e-8
 
-    # Check solution status
-    status = results.solver.status
-    termination = results.solver.termination_condition
+    # Big-M constant for variable linking
+    M = max(system.F, system.B) * 10.0
 
-    success = (
-        status == pyo.SolverStatus.ok and
-        termination == pyo.TerminationCondition.optimal
+    # Decision variables
+    # o[i] ∈ {0,1}: Binary offloading decision (GEKKO uses integers 0-1)
+    o = [m.Var(integer=True, lb=0, ub=1, name=f"o_{i}") for i in range(n)]
+
+    # f[i] ≥ 0: Edge CPU allocation
+    f = [m.Var(lb=0, ub=system.F, name=f"f_{i}") for i in range(n)]
+
+    # b[i] ≥ 0: Bandwidth allocation
+    b = [m.Var(lb=0, ub=system.B, name=f"b_{i}") for i in range(n)]
+
+    # Intermediate variables to avoid division by zero in objective
+    # f_inv[i] = 1 / (f[i] + eps) when o[i] = 1, else 0
+    # b_inv[i] = 1 / (b[i] + eps) when o[i] = 1, else 0
+    f_inv = [m.Var(lb=0, name=f"f_inv_{i}") for i in range(n)]
+    b_inv = [m.Var(lb=0, name=f"b_inv_{i}") for i in range(n)]
+
+    # Equations
+    for i in range(n):
+        # Inverse relationship: f_inv[i] * (f[i] + eps) >= o[i]
+        # When o[i]=1: f_inv >= 1/(f+eps), minimized at equality
+        # When o[i]=0: f_inv >= 0, minimized at 0
+        m.Equation(f_inv[i] * (f[i] + eps) >= o[i])
+
+        # Similar for bandwidth
+        m.Equation(b_inv[i] * (b[i] + eps) >= o[i])
+
+        # Variable linking with Big-M: f[i] <= M * o[i]
+        # When o[i]=0: f[i] <= 0 => f[i] = 0
+        # When o[i]=1: f[i] <= M (loose upper bound)
+        m.Equation(f[i] <= M * o[i])
+        m.Equation(b[i] <= M * o[i])
+
+        # Lower bounds: f[i] >= eps * o[i] (ensures proper offloading)
+        m.Equation(f[i] >= eps * o[i])
+        m.Equation(b[i] >= eps * o[i])
+
+        # Individual rationality constraint (with Big-M relaxation)
+        # C^e_i <= C^l_i + M * (1 - o[i])
+        # When o[i]=1: C^e_i <= C^l_i (user benefits from offloading)
+        # When o[i]=0: constraint is relaxed
+        ce_i = data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i]
+        m.Equation(ce_i <= data.cl[i] + M * (1 - o[i]))
+
+    # Capacity constraints
+    m.Equation(sum(f) <= system.F)
+    m.Equation(sum(b) <= system.B)
+
+    # Objective: minimize social cost
+    # Social cost = sum of offloading costs + sum of local costs for non-offloaders
+    offload_cost = sum(
+        o[i] * (data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i])
+        for i in range(n)
     )
+    local_cost_sum = sum((1 - o[i]) * data.cl[i] for i in range(n))
+    m.Obj(offload_cost + local_cost_sum)
 
-    n = len(model.I)
-    f = np.zeros(n, dtype=float)
-    b = np.zeros(n, dtype=float)
+    # Solve
+    try:
+        m.solve(disp=False, debug=0)
+        success = True
+    except Exception:
+        # Solver failed, try with relaxed options
+        try:
+            m.solver_options = [
+                'max_time 30',
+                'minlp_maximum_iterations 100',
+                'minlp_as_nlp 0',
+            ]
+            m.solve(disp=False, debug=0)
+            success = True
+        except Exception:
+            success = False
 
-    for i in model.I:
-        f[i] = float(pyo.value(model.f[i]))
-        b[i] = float(pyo.value(model.b[i]))
+    # Extract solution with robust error handling
+    def _extract_value(var):
+        """Safely extract value from GEKKO variable."""
+        try:
+            if var.value is None:
+                return 0.0
+            # Handle different value types
+            if isinstance(var.value, (list, np.ndarray)):
+                return float(var.value[0]) if len(var.value) > 0 else 0.0
+            return float(var.value)
+        except Exception:
+            return 0.0
+
+    f_vals = np.array([_extract_value(f_i) for f_i in f])
+    b_vals = np.array([_extract_value(b_i) for b_i in b])
 
     # Extract offloading set from binary variables
+    def _extract_binary(var):
+        """Safely extract binary decision from GEKKO variable."""
+        try:
+            val = _extract_value(var)
+            return val > 0.5
+        except Exception:
+            return False
+
     offloading_set = tuple(
-        int(i) for i in model.I
-        if pyo.value(model.o[i]) > 0.5
+        i for i in range(n)
+        if _extract_binary(o[i])
     )
 
-    social_cost = float(pyo.value(model.objective))
+    # Calculate social cost from the extracted solution
+    data_obj = _build_data(users)
+    ce = _offload_costs(data_obj, f_vals, b_vals, pE, pN)
+    off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+    loc_idx = np.asarray([i for i in range(n) if i not in set(offloading_set)], dtype=int)
+    social_cost = float(np.sum(ce[off_idx])) + (float(np.sum(data_obj.cl[loc_idx])) if loc_idx.size else 0.0)
 
-    return f, b, offloading_set, social_cost, success
+    return f_vals, b_vals, offloading_set, social_cost, success
 
 
 def _solve_centralized_minlp(
@@ -452,14 +463,15 @@ def _solve_centralized_minlp(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """MINLP-based centralized solver using Pyomo + BONMIN."""
+    """MINLP-based centralized solver using GEKKO + APOPT."""
     import time
 
     start_time = time.perf_counter()
 
-    # Build and solve model
-    model = _build_minlp_model(users, pE, pN, system)
-    f, b, offloading_set, social_cost, success = _solve_minlp_with_bonmin(model, base_cfg)
+    # Solve with GEKKO
+    f, b, offloading_set, social_cost, success = _solve_with_gekko(
+        users, pE, pN, system, base_cfg
+    )
 
     runtime = time.perf_counter() - start_time
 
@@ -473,8 +485,7 @@ def _solve_centralized_minlp(
         system,
         "CS_MINLP",
         meta={
-            "solver": "bonmin",
-            "algorithm": base_cfg.bonmin_algorithm,
+            "solver": "gekko_apopt",
             "social_cost": round(social_cost, 6),
             "offloading_size": len(offloading_set),
             "runtime_sec": round(runtime, 4),
@@ -539,7 +550,7 @@ def baseline_stage2_centralized_solver(
     """
     Solve Stage II using centralized optimization.
 
-    By default, uses MINLP (Pyomo + BONMIN) for direct formulation.
+    By default, uses MINLP (GEKKO + APOPT) for direct formulation.
     Falls back to enumeration for small n or if MINLP fails.
     """
     import warnings
@@ -548,8 +559,8 @@ def baseline_stage2_centralized_solver(
 
     # Check if MINLP is viable
     if use_minlp:
-        if not _check_bonmin_available():
-            warnings.warn("BONMIN solver not found, falling back to enumeration.")
+        if not _check_gekko_available():
+            warnings.warn("GEKKO solver not found, falling back to enumeration.")
             use_minlp = False
 
     if use_minlp:

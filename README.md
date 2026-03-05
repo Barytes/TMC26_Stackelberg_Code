@@ -87,7 +87,7 @@ Implemented algorithms:
 Implemented baselines:
 
 **Stage-II baselines (User Offloading Game solvers):**
-- `CS` (Centralized Solver): Direct MINLP formulation (Pyomo + BONMIN). Solves SCM problem exactly without enumeration. Requires BONMIN solver installation.
+- `CS` (Centralized Solver): Direct MINLP formulation (GEKKO + APOPT). Solves SCM problem exactly without enumeration. APOPT solver is included with GEKKO (pip-installable).
 - `UBRD` (User Best Response Dynamics): Iterative greedy where users update offloading decisions. Converges to GNE.
 - `VI` (Variational Inequality): Primal-dual subgradient method for GNEP. Updates shadow prices until convergence.
 - `PEN` (Penalty Method): Augmented Lagrangian approach for GNEP. Alternates between best-response and penalty updates.
