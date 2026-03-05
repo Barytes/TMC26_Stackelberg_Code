@@ -99,6 +99,12 @@ class BaselineConfig:
     penalty_init_rho: float
     penalty_rho_scale: float
     penalty_tol: float
+    # MINLP solver settings for CS baseline
+    cs_use_minlp: bool
+    cs_fallback_to_enum: bool
+    bonmin_time_limit: int
+    bonmin_algorithm: str
+    bonmin_mip_gap: float
 
 
 @dataclass(frozen=True)
@@ -231,6 +237,12 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         penalty_init_rho=float(raw.get("penalty_init_rho", 0.1)),
         penalty_rho_scale=float(raw.get("penalty_rho_scale", 4.0)),
         penalty_tol=float(raw.get("penalty_tol", 1e-4)),
+        # MINLP solver settings
+        cs_use_minlp=bool(raw.get("cs_use_minlp", True)),
+        cs_fallback_to_enum=bool(raw.get("cs_fallback_to_enum", True)),
+        bonmin_time_limit=int(raw.get("bonmin_time_limit", 300)),
+        bonmin_algorithm=str(raw.get("bonmin_algorithm", "B-BB")),
+        bonmin_mip_gap=float(raw.get("bonmin_mip_gap", 1e-4)),
     )
     if cfg.stage2_solver_for_pricing not in {"CS", "UBRD", "VI", "PEN", "DG"}:
         raise ValueError("stage2_solver_for_pricing must be one of CS/UBRD/VI/PEN/DG.")

@@ -287,7 +287,164 @@ def _penalty_axis_best_response(
     return min(max(x_best, eps), upper)
 
 
-def baseline_stage2_centralized_solver(
+def _check_bonmin_available() -> bool:
+    """Check if BONMIN solver is available on the system."""
+    try:
+        import pyomo.environ as pyo
+        solver = pyo.SolverFactory('bonmin')
+        return solver.available()
+    except ImportError:
+        return False
+
+
+def _build_minlp_model(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> "pyomo.ConcreteModel":
+    """
+    Build Pyomo MINLP model for Social Cost Minimization.
+
+    Variables:
+        o[i] ∈ {0,1}: Binary offloading decision for user i
+        f[i] ≥ 0: Edge computation resource allocated to user i (GHz)
+        b[i] ≥ 0: Bandwidth allocated to user i (MHz)
+
+    Objective: Minimize social cost
+        Σ_i [o[i] * C^e_i(f[i], b[i]) + (1-o[i]) * C^l_i]
+
+    Constraints:
+        - Capacity: Σ_i f[i] ≤ F, Σ_i b[i] ≤ B
+        - Variable linking (Big-M): f[i] ≤ M*o[i], b[i] ≤ M*o[i]
+        - Individual rationality: C^e_i(f[i], b[i]) ≤ C^l_i + M*(1-o[i])
+        - Lower bounds: f[i] ≥ ε*o[i], b[i] ≥ ε*o[i]
+    """
+    import pyomo.environ as pyo
+
+    n = users.n
+    data = _build_data(users)
+
+    model = pyo.ConcreteModel(name="SCM_MINLP")
+
+    # Index set
+    model.I = pyo.Set(initialize=range(n))
+
+    # Decision variables
+    model.o = pyo.Var(model.I, domain=pyo.Binary)  # offloading decision
+    model.f = pyo.Var(model.I, domain=pyo.NonNegativeReals)  # edge CPU allocation
+    model.b = pyo.Var(model.I, domain=pyo.NonNegativeReals)  # bandwidth allocation
+
+    # Precomputed parameters
+    model.aw = pyo.Param(model.I, initialize={i: float(data.aw[i]) for i in range(n)})
+    model.th = pyo.Param(model.I, initialize={i: float(data.th[i]) for i in range(n)})
+    model.cl = pyo.Param(model.I, initialize={i: float(data.cl[i]) for i in range(n)})
+
+    # Big-M constant
+    M = max(system.F, system.B) * 2.0
+
+    # Small epsilon to avoid division by zero
+    eps = 1e-8
+
+    # Objective: minimize social cost
+    def objective_rule(m):
+        # Offloading cost for users who offload
+        offload_cost = sum(
+            m.o[i] * (m.aw[i] / (m.f[i] + eps) + m.th[i] / (m.b[i] + eps) + pE * m.f[i] + pN * m.b[i])
+            for i in m.I
+        )
+        # Local cost for users who don't offload
+        local_cost_sum = sum((1 - m.o[i]) * m.cl[i] for i in m.I)
+        return offload_cost + local_cost_sum
+    model.objective = pyo.Objective(rule=objective_rule, sense=pyo.minimize)
+
+    # Capacity constraints
+    model.cap_F = pyo.Constraint(expr=sum(model.f[i] for i in model.I) <= system.F)
+    model.cap_B = pyo.Constraint(expr=sum(model.b[i] for i in model.I) <= system.B)
+
+    # Big-M variable linking constraints: f[i] ≤ M*o[i], b[i] ≤ M*o[i]
+    def link_f_rule(m, i):
+        return m.f[i] <= M * m.o[i]
+    model.link_f = pyo.Constraint(model.I, rule=link_f_rule)
+
+    def link_b_rule(m, i):
+        return m.b[i] <= M * m.o[i]
+    model.link_b = pyo.Constraint(model.I, rule=link_b_rule)
+
+    # Individual rationality constraints (with Big-M relaxation)
+    # When o[i] = 1: C^e_i <= C^l_i
+    # When o[i] = 0: constraint is relaxed (RHS = C^l_i + M)
+    def ir_rule(m, i):
+        return m.aw[i] / (m.f[i] + eps) + m.th[i] / (m.b[i] + eps) + pE * m.f[i] + pN * m.b[i] <= m.cl[i] + M * (1 - m.o[i])
+    model.ir = pyo.Constraint(model.I, rule=ir_rule)
+
+    # Lower bounds to ensure proper variable linking
+    def f_lb_rule(m, i):
+        return m.f[i] >= eps * m.o[i]
+    model.f_lb = pyo.Constraint(model.I, rule=f_lb_rule)
+
+    def b_lb_rule(m, i):
+        return m.b[i] >= eps * m.o[i]
+    model.b_lb = pyo.Constraint(model.I, rule=b_lb_rule)
+
+    return model
+
+
+def _solve_minlp_with_bonmin(
+    model: "pyomo.ConcreteModel",
+    base_cfg: BaselineConfig,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool]:
+    """
+    Solve MINLP model using BONMIN solver.
+
+    Returns:
+        f: Array of edge CPU allocations
+        b: Array of bandwidth allocations
+        offloading_set: Tuple of user indices who offload
+        social_cost: Optimal social cost
+        success: Whether solver found optimal solution
+    """
+    import pyomo.environ as pyo
+
+    solver = pyo.SolverFactory('bonmin')
+
+    # Set solver options
+    solver.options['bonmin.algorithm'] = base_cfg.bonmin_algorithm
+    solver.options['bonmin.time_limit'] = base_cfg.bonmin_time_limit
+    solver.options['bonmin.mip_allowable_gap'] = base_cfg.bonmin_mip_gap
+    solver.options['print_level'] = 0
+
+    results = solver.solve(model, tee=False)
+
+    # Check solution status
+    status = results.solver.status
+    termination = results.solver.termination_condition
+
+    success = (
+        status == pyo.SolverStatus.ok and
+        termination == pyo.TerminationCondition.optimal
+    )
+
+    n = len(model.I)
+    f = np.zeros(n, dtype=float)
+    b = np.zeros(n, dtype=float)
+
+    for i in model.I:
+        f[i] = float(pyo.value(model.f[i]))
+        b[i] = float(pyo.value(model.b[i]))
+
+    # Extract offloading set from binary variables
+    offloading_set = tuple(
+        int(i) for i in model.I
+        if pyo.value(model.o[i]) > 0.5
+    )
+
+    social_cost = float(pyo.value(model.objective))
+
+    return f, b, offloading_set, social_cost, success
+
+
+def _solve_centralized_minlp(
     users: UserBatch,
     pE: float,
     pN: float,
@@ -295,11 +452,52 @@ def baseline_stage2_centralized_solver(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """MINLP-based centralized solver using Pyomo + BONMIN."""
+    import time
+
+    start_time = time.perf_counter()
+
+    # Build and solve model
+    model = _build_minlp_model(users, pE, pN, system)
+    f, b, offloading_set, social_cost, success = _solve_minlp_with_bonmin(model, base_cfg)
+
+    runtime = time.perf_counter() - start_time
+
+    # Build outcome using existing helper
+    return _build_outcome_from_allocations(
+        users,
+        f,
+        b,
+        pE,
+        pN,
+        system,
+        "CS_MINLP",
+        meta={
+            "solver": "bonmin",
+            "algorithm": base_cfg.bonmin_algorithm,
+            "social_cost": round(social_cost, 6),
+            "offloading_size": len(offloading_set),
+            "runtime_sec": round(runtime, 4),
+            "success": success,
+        },
+    )
+
+
+def _solve_centralized_enumeration(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """Original enumeration-based solver."""
     if users.n > base_cfg.exact_max_users:
         raise ValueError(
-            f"Centralized Solver baseline only supports n_users <= {base_cfg.exact_max_users} "
-            "to avoid exponential blow-up."
+            f"Enumeration-based centralized solver only supports n_users <= {base_cfg.exact_max_users}. "
+            f"Use MINLP mode (cs_use_minlp=true) for larger problems."
         )
+
     data = _build_data(users)
     best_set: tuple[int, ...] = tuple()
     best_social = float(np.sum(data.cl))
@@ -318,7 +516,7 @@ def baseline_stage2_centralized_solver(
             best_social = social
             best_set = current
 
-    out = _evaluate(
+    return _evaluate(
         users,
         best_set,
         pE,
@@ -328,7 +526,50 @@ def baseline_stage2_centralized_solver(
         "CS",
         meta={"searched_sets": int(2**users.n), "solver": "scipy_slsqp"},
     )
-    return out
+
+
+def baseline_stage2_centralized_solver(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """
+    Solve Stage II using centralized optimization.
+
+    By default, uses MINLP (Pyomo + BONMIN) for direct formulation.
+    Falls back to enumeration for small n or if MINLP fails.
+    """
+    import warnings
+
+    use_minlp = base_cfg.cs_use_minlp
+
+    # Check if MINLP is viable
+    if use_minlp:
+        if not _check_bonmin_available():
+            warnings.warn("BONMIN solver not found, falling back to enumeration.")
+            use_minlp = False
+
+    if use_minlp:
+        try:
+            outcome = _solve_centralized_minlp(users, pE, pN, system, stack_cfg, base_cfg)
+            # Check if solution was successful
+            if outcome.meta.get("success", True):
+                return outcome
+            # If MINLP failed and fallback is enabled
+            if base_cfg.cs_fallback_to_enum and users.n <= base_cfg.exact_max_users:
+                warnings.warn("MINLP did not find optimal solution, falling back to enumeration.")
+                return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
+            return outcome
+        except Exception as e:
+            if base_cfg.cs_fallback_to_enum and users.n <= base_cfg.exact_max_users:
+                warnings.warn(f"MINLP solver error: {e}. Falling back to enumeration.")
+                return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
+            raise
+    else:
+        return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
 
 
 def baseline_stage2_ubrd(
@@ -546,6 +787,19 @@ def _stage2_solver(
             meta={"iterations": out.iterations},
         )
     raise ValueError(f"Unknown Stage-II method: {method}")
+
+
+def run_stage2_solver(
+    method: str,
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """Public API for running Stage-II solvers."""
+    return _stage2_solver(method, users, pE, pN, system, stack_cfg, base_cfg)
 
 
 def baseline_stage1_grid_search_oracle(

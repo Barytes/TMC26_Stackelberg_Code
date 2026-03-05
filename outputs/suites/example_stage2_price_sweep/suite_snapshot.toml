@@ -1,0 +1,27 @@
+[experiment]
+name = "example_stage2_price_sweep"
+description = "Example Stage-II sweep over pE with fixed pN"
+
+[data]
+n_users = 100
+seed = 2026
+trials = 5
+reuse_users_across_methods = true
+reuse_users_across_sweep = false
+
+[sweep]
+pE = [0.1, 0.5, 1.0]
+pN = [0.5]
+
+[methods]
+target = ["DG", "UBRD", "VI", "PEN"]
+
+[metrics]
+include = [
+  "social_cost",
+  "offloading_size",
+  "epsilon_proxy",
+  "runtime_sec",
+  "esp_revenue",
+  "nsp_revenue"
+]
