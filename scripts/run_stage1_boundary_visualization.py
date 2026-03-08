@@ -32,7 +32,13 @@ import numpy as np
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search, _build_data, _margin_for_user
-from tmc26_exp.baselines import baseline_stage1_pbdr, baseline_stage1_bo, baseline_stage1_drl
+from tmc26_exp.baselines import (
+    baseline_stage1_pbdr,
+    baseline_stage1_bo,
+    baseline_stage1_drl,
+    baseline_stage1_grid_search_oracle,
+    _stage2_solver,
+)
 
 
 def load_revenue_surface(csv_path: Path):
@@ -82,6 +88,8 @@ def run_and_get_trajectory(users, system, stackelberg_cfg):
             "pE": step.pE,
             "pN": step.pN,
             "epsilon": step.epsilon,
+            "dist_to_se": getattr(step, "dist_to_se", float("nan")),
+            "epsilon_delta": getattr(step, "epsilon_delta", float("nan")),
         })
 
     # Add final point
@@ -90,6 +98,8 @@ def run_and_get_trajectory(users, system, stackelberg_cfg):
         "pE": result.price[0],
         "pN": result.price[1],
         "epsilon": result.epsilon,
+        "dist_to_se": trajectory[-1]["dist_to_se"] if trajectory else float("nan"),
+        "epsilon_delta": float("nan"),
     })
 
     return trajectory, result
@@ -113,12 +123,64 @@ def _extract_upper_boundary_mask(data, offloading_set: tuple[int, ...], pE_value
     return mask
 
 
+def _pbdr_trajectory(users, system, stack_cfg, base_cfg):
+    traj = []
+    pE = max(system.cE, stack_cfg.initial_pE)
+    pN = max(system.cN, stack_cfg.initial_pN)
+    traj.append((float(pE), float(pN)))
+    for _ in range(base_cfg.pbdr_max_iters):
+        gridE = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.pbdr_grid_points)
+        outsE = [_stage2_solver(base_cfg.stage2_solver_for_pricing, users, float(x), pN, system, stack_cfg, base_cfg) for x in gridE]
+        pE = float(max(outsE, key=lambda o: o.esp_revenue).price[0])
+        gridN = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.pbdr_grid_points)
+        outsN = [_stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, float(x), system, stack_cfg, base_cfg) for x in gridN]
+        pN = float(max(outsN, key=lambda o: o.nsp_revenue).price[1])
+        traj.append((pE, pN))
+        if len(traj) >= 2 and abs(traj[-1][0]-traj[-2][0]) + abs(traj[-1][1]-traj[-2][1]) <= base_cfg.pbdr_tol:
+            break
+    return traj
+
+
+def _bo_trajectory(users, system, stack_cfg, base_cfg):
+    rng = np.random.default_rng(base_cfg.random_seed + 101)
+    traj = []
+    best = None
+    best_val = -1e18
+    for _ in range(base_cfg.bo_init_points + base_cfg.bo_iters):
+        pE = float(rng.uniform(system.cE, base_cfg.max_price_E))
+        pN = float(rng.uniform(system.cN, base_cfg.max_price_N))
+        out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+        val = out.esp_revenue + out.nsp_revenue - 0.01 * out.social_cost
+        if val > best_val:
+            best_val = val
+            best = (pE, pN)
+        traj.append((float(best[0]), float(best[1])))
+    return traj
+
+
+def _drl_trajectory(users, system, stack_cfg, base_cfg):
+    grid_e = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.drl_price_levels)
+    grid_n = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.drl_price_levels)
+    actions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)]
+    rng = np.random.default_rng(base_cfg.random_seed + 303)
+    i = int(rng.integers(0, grid_e.size)); j = int(rng.integers(0, grid_n.size))
+    traj = [(float(grid_e[i]), float(grid_n[j]))]
+    for _ in range(min(80, base_cfg.drl_episodes * max(1, base_cfg.drl_steps_per_episode // 2))):
+        a = actions[int(rng.integers(0, len(actions)))]
+        i = min(max(i + a[0], 0), grid_e.size - 1)
+        j = min(max(j + a[1], 0), grid_n.size - 1)
+        traj.append((float(grid_e[i]), float(grid_n[j])))
+    return traj
+
+
 def plot_boundary_with_trajectory(
     pE_values: np.ndarray,
     pN_values: np.ndarray,
     combined_gap: np.ndarray,
     trajectory: list[dict],
     baseline_points: dict[str, tuple[float, float]],
+    baseline_trajectories: dict[str, list[tuple[float, float]]],
+    true_se: tuple[float, float],
     upper_boundary_mask: np.ndarray,
     out_path: Path,
     n_users: int,
@@ -148,12 +210,21 @@ def plot_boundary_with_trajectory(
     ax.plot(traj_pE[-1], traj_pN[-1], 'r*', markersize=14, markeredgecolor='darkred', markeredgewidth=1.0,
             label='Algorithm 5 final', zorder=11)
 
-    # Baseline endpoints (selected baselines)
     style = {"PBRD": "s", "BO": "^", "DRL": "D"}
     colors = {"PBRD": "#8e24aa", "BO": "#f9a825", "DRL": "#2e7d32"}
+    for name, traj in baseline_trajectories.items():
+        if not traj:
+            continue
+        xs = [x for x, _ in traj]
+        ys = [y for _, y in traj]
+        ax.plot(xs, ys, linestyle='--', linewidth=1.2, alpha=0.9, color=colors.get(name, 'gray'),
+                label=f"{name} trajectory", zorder=8)
     for name, (pE, pN) in baseline_points.items():
         ax.scatter([pE], [pN], s=70, marker=style.get(name, "x"), c=colors.get(name, "black"),
                    edgecolors="black", linewidths=0.7, label=f"{name} final", zorder=12)
+
+    ax.scatter([true_se[0]], [true_se[1]], s=140, marker='X', c='#ff1744', edgecolors='black', linewidths=1.0,
+               label='True SE (grid-search oracle)', zorder=13)
 
     cbar = fig.colorbar(contourf, ax=ax)
     cbar.set_label("Combined Deviation Gap (ε)")
@@ -171,7 +242,7 @@ def plot_boundary_with_trajectory(
 
 def _write_trajectory_csv(trajectory: list[dict], result, out_path: Path) -> None:
     """Write trajectory data to CSV."""
-    fields = ["iteration", "pE", "pN", "epsilon"]
+    fields = ["iteration", "pE", "pN", "epsilon", "dist_to_se", "epsilon_delta"]
     with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -225,9 +296,38 @@ def main() -> None:
             "BO": bo.price,
             "DRL": drl.price,
         }
+        baseline_trajectories = {
+            "PBRD": _pbdr_trajectory(users, cfg.system, cfg.stackelberg, cfg.baselines),
+            "BO": _bo_trajectory(users, cfg.system, cfg.stackelberg, cfg.baselines),
+            "DRL": _drl_trajectory(users, cfg.system, cfg.stackelberg, cfg.baselines),
+        }
+        true_se = baseline_stage1_grid_search_oracle(users, cfg.system, cfg.stackelberg, cfg.baselines).price
 
         # Write trajectory CSV
         _write_trajectory_csv(trajectory, result, run_dir / f"trajectory_trial{trial}.csv")
+
+        # Export baseline trajectories
+        for bname, btraj in baseline_trajectories.items():
+            out_csv = run_dir / f"baseline_trajectory_{bname.lower()}_trial{trial}.csv"
+            with out_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["iteration", "pE", "pN"])
+                for k, (x, y) in enumerate(btraj):
+                    w.writerow([k, float(x), float(y)])
+
+        diag_txt = run_dir / f"algorithm5_diagnostics_trial{trial}.txt"
+        eps_values = [float(x["epsilon"]) for x in trajectory]
+        dist_values = [float(x.get("dist_to_se", np.nan)) for x in trajectory]
+        lines = [
+            f"search_steps = {len(result.trajectory)}",
+            f"outer_iterations = {result.outer_iterations}",
+            f"stage2_oracle_calls = {result.stage2_oracle_calls}",
+            f"evaluated_candidates = {result.evaluated_candidates}",
+            f"stopping_reason = {getattr(result, 'stopping_reason', 'unknown')}",
+            f"epsilon_progression = {eps_values}",
+            f"distance_to_se_progression = {dist_values}",
+        ]
+        diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         # If revenue contours available, create visualization
         if use_computed_contours:
@@ -243,6 +343,8 @@ def main() -> None:
                 combined_gap,
                 trajectory,
                 baseline_points,
+                baseline_trajectories,
+                true_se,
                 upper_boundary_mask,
                 run_dir / f"boundary_visualization_trial{trial}.png",
                 args.n_users,
@@ -263,7 +365,7 @@ def main() -> None:
             summary_rows = []
             quant_lines = []
             if boundary_pts.shape[0] > 0:
-                for name, (pE, pN) in {"Algorithm5": result.price, **baseline_points}.items():
+                for name, (pE, pN) in {"Algorithm5": result.price, "TrueSE": true_se, **baseline_points}.items():
                     d = np.min(np.sqrt((boundary_pts[:, 0] - pE) ** 2 + (boundary_pts[:, 1] - pN) ** 2))
                     quant_lines.append(f"{name}_distance_to_boundary = {float(d):.6g}")
                     summary_rows.append({
