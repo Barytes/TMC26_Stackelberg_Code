@@ -306,7 +306,7 @@ def main() -> None:
         trial_cfg = replace(cfg, n_users=n_users)
         for L in L_values:
             # Create modified Stackelberg config with L
-            stackelberg_cfg = StackelbergConfig(rne_directions=L)
+            stackelberg_cfg = replace(cfg.stackelberg, rne_directions=L)
 
             for trial in range(args.trials):
                 seed = args.seed + 1000 * (n_users * 100 + L) + trial

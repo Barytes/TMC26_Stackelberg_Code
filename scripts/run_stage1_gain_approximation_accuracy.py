@@ -221,8 +221,8 @@ def main() -> None:
 
             for sample in range(args.samples_per_trial):
                 # Sample random prices
-                pE = rng.uniform(system.cE * 1.1, system.cE * 3.0) if hasattr(system, 'cE') else rng.uniform(0.5, 3.0)
-                pN = rng.uniform(system.cN * 1.1, system.cN * 3.0) if hasattr(system, 'cN') else rng.uniform(0.5, 3.0)
+                pE = rng.uniform(cfg.system.cE * 1.1, cfg.system.cE * 3.0) if hasattr(cfg.system, 'cE') else rng.uniform(0.5, 3.0)
+                pN = rng.uniform(cfg.system.cN * 1.1, cfg.system.cN * 3.0) if hasattr(cfg.system, 'cN') else rng.uniform(0.5, 3.0)
 
                 # Sample random offloading set
                 offloading_prob = rng.uniform(0.2, 0.8)

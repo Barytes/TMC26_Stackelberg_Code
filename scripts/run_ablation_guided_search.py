@@ -69,8 +69,8 @@ def compute_epsilon(
     system: SystemConfig,
 ) -> float:
     """Compute true deviation gap (epsilon) for a given solution."""
-    gain_E = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], Provider.E, system)
-    gain_N = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], Provider.N, system)
+    gain_E = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], "E", system)
+    gain_N = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], "N", system)
     return max(gain_E.gain, gain_N.gain)
 
 
@@ -264,8 +264,8 @@ def run_deviation_target_only(
     for t in range(cfg.search_max_iters):
         outer_iterations = t + 1
 
-        gain_E = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], Provider.E, system)
-        gain_N = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], Provider.N, system)
+        gain_E = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "E", system)
+        gain_N = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "N", system)
         current_eps = max(gain_E.gain, gain_N.gain)
 
         # Only evaluate exact deviation targets

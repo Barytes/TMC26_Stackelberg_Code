@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,7 +31,8 @@ import numpy as np
 
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
-from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search
+from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search, _build_data, _margin_for_user
+from tmc26_exp.baselines import baseline_stage1_pbdr, baseline_stage1_bo, baseline_stage1_drl
 
 
 def load_revenue_surface(csv_path: Path):
@@ -93,49 +95,73 @@ def run_and_get_trajectory(users, system, stackelberg_cfg):
     return trajectory, result
 
 
+def _extract_upper_boundary_mask(data, offloading_set: tuple[int, ...], pE_values: np.ndarray, pN_values: np.ndarray, system) -> np.ndarray:
+    """Upper boundary mask for fixed offloading set: min_i m_i(p, X) ~= 0 from positive side."""
+    if not offloading_set:
+        return np.zeros((pN_values.size, pE_values.size), dtype=bool)
+    tol = 1e-2
+    mask = np.zeros((pN_values.size, pE_values.size), dtype=bool)
+    for yi, pN in enumerate(pN_values):
+        for xi, pE in enumerate(pE_values):
+            margins = [
+                _margin_for_user(data, offloading_set, i, float(pE), float(pN), system)
+                for i in offloading_set
+            ]
+            m_min = min(margins)
+            if 0.0 <= m_min <= tol:
+                mask[yi, xi] = True
+    return mask
+
+
 def plot_boundary_with_trajectory(
     pE_values: np.ndarray,
     pN_values: np.ndarray,
     combined_gap: np.ndarray,
     trajectory: list[dict],
+    baseline_points: dict[str, tuple[float, float]],
+    upper_boundary_mask: np.ndarray,
     out_path: Path,
     n_users: int,
 ) -> None:
-    """Plot combined deviation gap contour with trajectory overlay."""
+    """Plot deviation-gap contour + theorem boundary + trajectories / baseline endpoints."""
     pE_grid, pN_grid = np.meshgrid(pE_values, pN_values)
 
     fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
 
-    # Plot combined deviation gap as filled contour
     contourf = ax.contourf(pE_grid, pN_grid, combined_gap, levels=20, cmap="hot", alpha=0.8)
-
-    # Add contour lines
     contour = ax.contour(pE_grid, pN_grid, combined_gap, levels=10, colors="white", linewidths=0.5, alpha=0.5)
     ax.clabel(contour, inline=True, fontsize=7, fmt="%.1f")
 
-    # Extract trajectory coordinates
+    # Overlay theoretical upper boundary (Theorem 3 / Corollary 1 intent)
+    by, bx = np.where(upper_boundary_mask)
+    if bx.size > 0:
+        ax.scatter(pE_values[bx], pN_values[by], s=7, c="#1565c0", marker=".", alpha=0.7,
+                   label="Upper boundary ∂P_X*", zorder=7)
+
     traj_pE = [t["pE"] for t in trajectory]
     traj_pN = [t["pN"] for t in trajectory]
+    ax.plot(traj_pE, traj_pN, 'c-', linewidth=2.5, marker='o', markersize=5,
+            markerfacecolor='cyan', markeredgecolor='black', markeredgewidth=0.8,
+            label='Algorithm 5 trajectory', zorder=10)
+    ax.plot(traj_pE[0], traj_pN[0], 'go', markersize=10, markeredgecolor='darkgreen', markeredgewidth=1.5,
+            label='Start', zorder=11)
+    ax.plot(traj_pE[-1], traj_pN[-1], 'r*', markersize=14, markeredgecolor='darkred', markeredgewidth=1.0,
+            label='Algorithm 5 final', zorder=11)
 
-    # Plot trajectory
-    ax.plot(traj_pE, traj_pN, 'c-', linewidth=2.5, marker='o', markersize=6,
-            markerfacecolor='cyan', markeredgecolor='black', markeredgewidth=1,
-            label='Algorithm 5 Trajectory', zorder=10)
+    # Baseline endpoints (selected baselines)
+    style = {"PBRD": "s", "BO": "^", "DRL": "D"}
+    colors = {"PBRD": "#8e24aa", "BO": "#f9a825", "DRL": "#2e7d32"}
+    for name, (pE, pN) in baseline_points.items():
+        ax.scatter([pE], [pN], s=70, marker=style.get(name, "x"), c=colors.get(name, "black"),
+                   edgecolors="black", linewidths=0.7, label=f"{name} final", zorder=12)
 
-    # Mark start and end points
-    ax.plot(traj_pE[0], traj_pN[0], 'go', markersize=12, markeredgecolor='darkgreen',
-            markeredgewidth=2, label='Start', zorder=11)
-    ax.plot(traj_pE[-1], traj_pN[-1], 'r*', markersize=15, markeredgecolor='darkred',
-            markeredgewidth=1.5, label='Equilibrium', zorder=11)
-
-    # Colorbar
     cbar = fig.colorbar(contourf, ax=ax)
     cbar.set_label("Combined Deviation Gap (ε)")
 
-    ax.set_title(f"Stage I: Price Space with Algorithm 5 Trajectory\n(n={n_users} users)")
-    ax.set_xlabel("pE (ESP Price)")
-    ax.set_ylabel("pN (NSP Price)")
-    ax.legend(loc='upper right')
+    ax.set_title(f"Stage I Figure 6: Boundary/Gap/Trajectory Overlay\n(n={n_users} users)")
+    ax.set_xlabel("pE (ESP price)")
+    ax.set_ylabel("pN (NSP price)")
+    ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.3)
 
     fig.tight_layout()
@@ -190,23 +216,82 @@ def main() -> None:
         # Run Algorithm 5 and get trajectory
         trajectory, result = run_and_get_trajectory(users, cfg.system, cfg.stackelberg)
 
+        # Selected baselines (final points for overlay)
+        pbdr = baseline_stage1_pbdr(users, cfg.system, cfg.stackelberg, cfg.baselines)
+        bo = baseline_stage1_bo(users, cfg.system, cfg.stackelberg, cfg.baselines)
+        drl = baseline_stage1_drl(users, cfg.system, cfg.stackelberg, cfg.baselines)
+        baseline_points = {
+            "PBRD": pbdr.price,
+            "BO": bo.price,
+            "DRL": drl.price,
+        }
+
         # Write trajectory CSV
-        _write_trajectory_csv(
-            trajectory, result,
-            run_dir / f"trajectory_trial{trial}.csv"
-        )
+        _write_trajectory_csv(trajectory, result, run_dir / f"trajectory_trial{trial}.csv")
 
         # If revenue contours available, create visualization
         if use_computed_contours:
             print(f"Loading revenue contours from: {esp_csv.parent}")
             pE_values, pN_values, esp_gap, nsp_gap, combined_gap = compute_deviation_gaps(esp_csv, nsp_csv)
 
+            data = _build_data(users)
+            upper_boundary_mask = _extract_upper_boundary_mask(data, result.offloading_set, pE_values, pN_values, cfg.system)
+
             plot_boundary_with_trajectory(
-                pE_values, pN_values, combined_gap, trajectory,
+                pE_values,
+                pN_values,
+                combined_gap,
+                trajectory,
+                baseline_points,
+                upper_boundary_mask,
                 run_dir / f"boundary_visualization_trial{trial}.png",
                 args.n_users,
             )
-            print(f"  Created visualization for trial {trial}")
+
+            # Persist heatmap/contour surface values
+            gap_csv = run_dir / f"combined_gap_surface_trial{trial}.csv"
+            with gap_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["pE", "pN", "combined_gap"])
+                for yi, pN in enumerate(pN_values):
+                    for xi, pE in enumerate(pE_values):
+                        w.writerow([float(pE), float(pN), float(combined_gap[yi, xi])])
+
+            # Quantitative summary: distance of final points to nearest boundary point
+            by, bx = np.where(upper_boundary_mask)
+            boundary_pts = np.column_stack([pE_values[bx], pN_values[by]]) if bx.size > 0 else np.zeros((0, 2))
+            summary_rows = []
+            quant_lines = []
+            if boundary_pts.shape[0] > 0:
+                for name, (pE, pN) in {"Algorithm5": result.price, **baseline_points}.items():
+                    d = np.min(np.sqrt((boundary_pts[:, 0] - pE) ** 2 + (boundary_pts[:, 1] - pN) ** 2))
+                    quant_lines.append(f"{name}_distance_to_boundary = {float(d):.6g}")
+                    summary_rows.append({
+                        "method": name,
+                        "pE": float(pE),
+                        "pN": float(pN),
+                        "distance_to_boundary": float(d),
+                    })
+            else:
+                quant_lines.append("boundary_points = 0")
+
+            (run_dir / f"boundary_summary_trial{trial}.txt").write_text("\n".join(quant_lines) + "\n", encoding="utf-8")
+
+            summary_csv = run_dir / f"boundary_summary_trial{trial}.csv"
+            with summary_csv.open("w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=["method", "pE", "pN", "distance_to_boundary"])
+                w.writeheader()
+                w.writerows(summary_rows)
+
+            summary_json = run_dir / f"boundary_summary_trial{trial}.json"
+            summary_json.write_text(json.dumps({
+                "trial": trial,
+                "n_users": args.n_users,
+                "boundary_points": int(boundary_pts.shape[0]),
+                "methods": summary_rows,
+            }, indent=2), encoding="utf-8")
+
+            print(f"  Created visualization + heatmap surface + boundary summaries for trial {trial}")
         else:
             print(f"Revenue contours not found at: {esp_csv}")
             print("  Run compute_real_revenue_contours.py first to generate contours.")

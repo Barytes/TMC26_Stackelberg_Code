@@ -32,11 +32,9 @@ from tmc26_exp.baselines import baseline_market_equilibrium
 from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search
 
 
-def run_gsse_with_custom_system(users, system_config):
+def run_gsse_with_custom_system(users, system_config, stackelberg_cfg):
     """Run GSSE with custom system configuration."""
     from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search
-    from tmc26_exp.config import StackelbergConfig
-    stackelberg_cfg = StackelbergConfig()
     result = algorithm_5_stackelberg_guided_search(users, system_config, stackelberg_cfg)
     return result
 
@@ -239,10 +237,6 @@ def main() -> None:
                 B=B,
                 cE=cfg.system.cE,
                 cN=cfg.system.cN,
-                sigma_E=cfg.system.sigma_E,
-                sigma_N=cfg.system.sigma_N,
-                zeta_E=cfg.system.zeta_E,
-                zeta_N=cfg.system.zeta_N,
             )
 
             for trial in range(args.trials):
@@ -251,7 +245,7 @@ def main() -> None:
                 users = sample_users(trial_cfg, rng)
 
                 # Run GSSE with custom system
-                result = run_gsse_with_custom_system(users, custom_system)
+                result = run_gsse_with_custom_system(users, custom_system, cfg.stackelberg)
 
                 # Compute utilization
                 inner = result.inner_result

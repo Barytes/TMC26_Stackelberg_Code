@@ -53,49 +53,42 @@ def compute_theorem2_bound(
     system,
     cfg,
 ) -> tuple[float, float, int]:
-    """Compute Theorem 2 approximation ratio bound.
+    """Compute theorem upper bound exactly matching Eq. (app-bound).
 
+    ΔĈ_i := max_{0<f<=F,0<b<=B} {C_i^l - C_i^e(f,b)}
+    with C_i^e(f,b)=aw_i/f + th_i/b + pE*f + pN*b.
     Returns: (bound, v_empty, optimal_offloading_size)
     """
-    # Compute V(∅) - social cost with empty offloading set
     v_empty = compute_local_cost_only(users)
 
-    # Compute optimal solution using CS solver
     opt_result = baseline_stage2_centralized_solver(users, pE, pN, system, cfg.stackelberg, cfg.baselines)
-    v_optimal = opt_result.social_cost
     opt_set_size = len(opt_result.offloading_set)
 
-    # Compute marginal gain ΔĈ_{i*} for the best first user
-    # This is the maximum reduction in cost from adding one user
     data = _build_data(users)
 
-    # Evaluate adding each single user
+    def one_dim_min(a: float, t: float, upper: float) -> float:
+        x_star = np.sqrt(max(a, 1e-12) / max(t, 1e-12))
+        if x_star <= upper:
+            return 2.0 * np.sqrt(max(a, 1e-12) * max(t, 1e-12))
+        return a / upper + t * upper
+
     best_marginal_gain = 0.0
     for i in range(users.n):
-        # Cost with only user i offloading
-        single_set = _sorted_tuple([i])
-        inner = algorithm_1_distributed_primal_dual(users, single_set, pE, pN, system, cfg.stackelberg)
-        ce_single = inner.offloading_objective
-        # Local cost of user i
-        cl_i = float(data.cl[i])
-        # Marginal gain = local_cost_i - offloading_cost_i
-        marginal_gain = cl_i - ce_single
+        ce_min = one_dim_min(float(data.aw[i]), float(pE), float(system.F)) + one_dim_min(
+            float(data.th[i]), float(pN), float(system.B)
+        )
+        marginal_gain = float(data.cl[i] - ce_min)
         if marginal_gain > best_marginal_gain:
             best_marginal_gain = marginal_gain
 
-    # If no positive marginal gain, bound is trivial
     if best_marginal_gain <= 0:
-        return float('inf'), v_empty, opt_set_size
+        return float("inf"), v_empty, opt_set_size
 
-    # Theorem 2 bound: (V(∅) - ΔĈ_{i*}) / (V(∅) - |X*|ΔĈ_{i*})
     numerator = v_empty - best_marginal_gain
     denominator = v_empty - opt_set_size * best_marginal_gain
-
     if denominator <= 0:
-        return float('inf'), v_empty, opt_set_size
-
-    bound = numerator / denominator
-    return bound, v_empty, opt_set_size
+        return float("inf"), v_empty, opt_set_size
+    return float(numerator / denominator), v_empty, opt_set_size
 
 
 def _mean_std(values: list[float]) -> tuple[float, float]:
@@ -179,9 +172,6 @@ def _plot(summary_rows: list[dict], out_path: Path) -> None:
     # Plot theoretical bound
     ax.plot(x, y_bound, marker='s', color='#b71c1c',
             linewidth=2.0, linestyle='--', label='Theorem 2 Bound', markersize=8)
-
-    # Reference line at y=1 (perfect approximation)
-    ax.axhline(1.0, color='gray', linestyle=':', linewidth=1.5, alpha=0.7, label='Perfect (ratio=1)')
 
     ax.set_title("Algorithm 2 Approximation Ratio vs Number of Users\n(Theorem 2 Validation)")
     ax.set_xlabel("Number of Users")

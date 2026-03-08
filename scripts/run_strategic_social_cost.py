@@ -207,7 +207,7 @@ def main() -> None:
             })
 
             # Random Offloading
-            rand = baseline_random_offloading(users, cfg.system, cfg.baselines)
+            rand = baseline_random_offloading(users, cfg.system, cfg.stackelberg, cfg.baselines)
             raw_rows.append({
                 "trial": trial,
                 "seed": seed,

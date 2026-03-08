@@ -72,8 +72,8 @@ def compute_epsilon(
     system: SystemConfig,
 ) -> float:
     """Compute true deviation gap (epsilon) for a given solution."""
-    gain_E = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], Provider.E, system)
-    gain_N = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], Provider.N, system)
+    gain_E = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], "E", system)
+    gain_N = algorithm_3_gain_approximation(users, offloading_set, price[0], price[1], "N", system)
     return max(gain_E.gain, gain_N.gain)
 
 

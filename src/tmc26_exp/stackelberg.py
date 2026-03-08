@@ -836,8 +836,8 @@ def algorithm_5_stackelberg_guided_search(
 
     # Compute provider revenues
     data = _build_data(users)
-    esp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], Provider.E, system)
-    nsp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], Provider.N, system)
+    esp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], "E", system)
+    nsp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], "N", system)
 
     return StackelbergResult(
         price=current_price,
