@@ -6,11 +6,17 @@ This script is intentionally standalone and minimally invasive:
 - adds process-level parallelism across independent trials/seeds
 - writes both per-trial raw results and method-level summary tables
 
+**IMPORTANT WARNING on Runtime Statistics:**
+The `runtime_sec_est_shared` field is an ESTIMATED value computed by dividing total
+trial time by the number of methods. It should NOT be used for strict runtime comparison
+between methods. For accurate runtime comparison, use scripts that time each method
+individually (e.g., `run_stage1_baseline_comparison.py`).
+
 Example:
-  uv run python scripts/run_cpu_parallel_baselines.py \
-    --config configs/default.toml \
-    --trials 100 \
-    --workers 16 \
+  uv run python scripts/run_cpu_parallel_baselines.py \\
+    --config configs/default.toml \\
+    --trials 100 \\
+    --workers 16 \\
     --methods GSSE,GSO,PBRD,BO,DRL,MarketEquilibrium,SingleSP,RandomOffloading
 """
 
@@ -84,7 +90,9 @@ def _run_one_trial(config_path: str, seed: int, methods: list[str]) -> list[dict
 
     rows: list[dict[str, object]] = []
     denom = max(len(outcomes), 1)
-    est_method_time = elapsed / denom
+    # WARNING: This is an estimated shared runtime, NOT suitable for strict method comparison
+    # For accurate runtime comparison, use scripts that time each method individually
+    est_method_time_shared = elapsed / denom
     for out in outcomes:
         rows.append(
             {
@@ -97,7 +105,7 @@ def _run_one_trial(config_path: str, seed: int, methods: list[str]) -> list[dict
                 "esp_revenue": out.esp_revenue,
                 "nsp_revenue": out.nsp_revenue,
                 "epsilon_proxy": out.epsilon_proxy,
-                "runtime_sec_est": est_method_time,
+                "runtime_sec_est_shared": est_method_time_shared,
                 "meta": str(out.meta),
             }
         )
@@ -115,7 +123,7 @@ def _write_raw_csv(rows: list[dict[str, object]], out_path: Path) -> None:
         "esp_revenue",
         "nsp_revenue",
         "epsilon_proxy",
-        "runtime_sec_est",
+        "runtime_sec_est_shared",
         "meta",
     ]
     with out_path.open("w", newline="", encoding="utf-8") as f:
@@ -150,8 +158,8 @@ def _write_summary_csv(rows: list[dict[str, object]], out_path: Path) -> None:
         "epsilon_proxy_std",
         "offloading_size_mean",
         "offloading_size_std",
-        "runtime_sec_est_mean",
-        "runtime_sec_est_std",
+        "runtime_sec_est_shared_mean",
+        "runtime_sec_est_shared_std",
     ]
     with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -163,7 +171,7 @@ def _write_summary_csv(rows: list[dict[str, object]], out_path: Path) -> None:
             nsp = [float(x["nsp_revenue"]) for x in g]
             eps = [float(x["epsilon_proxy"]) for x in g]
             off = [float(x["offloading_size"]) for x in g]
-            rt = [float(x["runtime_sec_est"]) for x in g]
+            rt = [float(x["runtime_sec_est_shared"]) for x in g]
             social_m, social_s = _mean_std(social)
             esp_m, esp_s = _mean_std(esp)
             nsp_m, nsp_s = _mean_std(nsp)
@@ -184,8 +192,8 @@ def _write_summary_csv(rows: list[dict[str, object]], out_path: Path) -> None:
                     "epsilon_proxy_std": eps_s,
                     "offloading_size_mean": off_m,
                     "offloading_size_std": off_s,
-                    "runtime_sec_est_mean": rt_m,
-                    "runtime_sec_est_std": rt_s,
+                    "runtime_sec_est_shared_mean": rt_m,
+                    "runtime_sec_est_shared_std": rt_s,
                 }
             )
 

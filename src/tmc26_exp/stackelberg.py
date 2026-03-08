@@ -72,6 +72,20 @@ class StackelbergResult:
     inner_result: InnerSolveResult
     social_cost: float
     trajectory: tuple[SearchStep, ...]
+    # Tracking metrics for experiments (for paper Section V.E and VI validation)
+    outer_iterations: int = 0
+    stage2_oracle_calls: int = 0
+    evaluated_candidates: int = 0
+    evaluated_boundary_points: int = 0
+    esp_revenue: float = 0.0
+    nsp_revenue: float = 0.0
+    # Tracking metrics for experiments
+    outer_iterations: int = 0
+    stage2_oracle_calls: int = 0
+    evaluated_candidates: int = 0
+    evaluated_boundary_points: int = 0
+    esp_revenue: float = 0.0
+    nsp_revenue: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -704,20 +718,49 @@ def algorithm_5_stackelberg_guided_search(
     system: SystemConfig,
     cfg: StackelbergConfig,
 ) -> StackelbergResult:
+    """
+    Algorithm 5: Stackelberg-Guided Search for ε-NE.
+
+    This implementation follows the paper's theoretical structure:
+    1. Initialize with Stage-II oracle at initial price
+    2. For each iteration:
+       a. Compute exact deviation targets Y_E^*(p) and Y_N^*(p) via Algorithm 3
+       b. Evaluate these exact deviation targets first
+       c. If no improvement, fall back to neighborhood search over N(p)
+       d. If still no improvement, terminate
+    3. Return final price, offloading set, epsilon, and tracking metrics
+
+    Paper reference: Section V.E, Algorithm 5
+    """
+    # Initialize tracking counters
+    stage2_oracle_calls = 0
+    evaluated_candidates = 0
+    evaluated_boundary_points = 0
+
     initial_price = (max(cfg.initial_pE, system.cE), max(cfg.initial_pN, system.cN))
 
+    # Initial Stage-II call
     init_stage2 = algorithm_2_heuristic_user_selection(users, initial_price[0], initial_price[1], system, cfg)
+    stage2_oracle_calls += 1
     current_set = init_stage2.offloading_set
+
+    # Initial RNE computation (Algorithm 4)
     current_rne = algorithm_4_optimal_rne_sampling(users, current_set, initial_price, system, cfg)
     current_price = current_rne.price
+    evaluated_boundary_points += cfg.rne_directions
 
     visited: set[tuple[int, ...]] = {current_set}
     trajectory: list[SearchStep] = []
+    outer_iterations = 0
 
     for t in range(cfg.search_max_iters):
+        outer_iterations = t + 1
+
+        # Compute gain approximations (Algorithm 3)
         gain_E = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "E", system)
         gain_N = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "N", system)
         current_eps = max(gain_E.gain, gain_N.gain)
+
         trajectory.append(
             SearchStep(
                 iteration=t,
@@ -728,22 +771,50 @@ def algorithm_5_stackelberg_guided_search(
             )
         )
 
-        candidate_sets: list[tuple[int, ...]] = []
+        # Step 1: Evaluate exact deviation targets Y_E^*(p) and Y_N^*(p)
+        exact_targets: list[tuple[int, ...]] = []
         for cand in (gain_E.best_set, gain_N.best_set):
-            if cand not in candidate_sets and cand != current_set:
-                candidate_sets.append(cand)
+            if cand not in exact_targets and cand != current_set:
+                exact_targets.append(cand)
 
         best_candidate: tuple[int, ...] | None = None
         best_rne: RNEResult | None = None
         best_eps = current_eps
+        improved_by_exact_target = False
 
-        for candidate_set in candidate_sets:
+        # Evaluate exact deviation targets first (prioritized)
+        for candidate_set in exact_targets:
+            evaluated_candidates += 1
             candidate_rne = algorithm_4_optimal_rne_sampling(users, candidate_set, current_price, system, cfg)
+            evaluated_boundary_points += cfg.rne_directions
+
             if candidate_rne.epsilon + cfg.search_improvement_tol < best_eps:
                 best_eps = candidate_rne.epsilon
                 best_candidate = candidate_set
                 best_rne = candidate_rne
+                improved_by_exact_target = True
 
+        # Step 2: Neighborhood fallback (if exact targets didn't improve)
+        if not improved_by_exact_target:
+            data = _build_data(users)
+            neighborhood = _candidate_family(data, current_set, current_price[0], current_price[1], system)
+
+            for candidate_set in neighborhood:
+                if candidate_set == current_set or candidate_set in exact_targets:
+                    continue
+                if candidate_set in visited:
+                    continue
+
+                evaluated_candidates += 1
+                candidate_rne = algorithm_4_optimal_rne_sampling(users, candidate_set, current_price, system, cfg)
+                evaluated_boundary_points += cfg.rne_directions
+
+                if candidate_rne.epsilon + cfg.search_improvement_tol < best_eps:
+                    best_eps = candidate_rne.epsilon
+                    best_candidate = candidate_set
+                    best_rne = candidate_rne
+
+        # Termination: no improvement found
         if best_candidate is None or best_rne is None:
             break
         if best_candidate in visited:
@@ -753,11 +824,20 @@ def algorithm_5_stackelberg_guided_search(
         current_set = best_candidate
         current_price = best_rne.price
 
+    # Final Stage-II call to get the actual offloading allocation
     final_stage2 = algorithm_2_heuristic_user_selection(users, current_price[0], current_price[1], system, cfg)
+    stage2_oracle_calls += 1
     final_set = final_stage2.offloading_set
+
+    # Final epsilon computation
     final_gain_E = algorithm_3_gain_approximation(users, final_set, current_price[0], current_price[1], "E", system)
     final_gain_N = algorithm_3_gain_approximation(users, final_set, current_price[0], current_price[1], "N", system)
     final_eps = max(final_gain_E.gain, final_gain_N.gain)
+
+    # Compute provider revenues
+    data = _build_data(users)
+    esp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], Provider.E, system)
+    nsp_rev = _provider_revenue(data, final_set, current_price[0], current_price[1], Provider.N, system)
 
     return StackelbergResult(
         price=current_price,
@@ -768,6 +848,12 @@ def algorithm_5_stackelberg_guided_search(
         inner_result=final_stage2.inner_result,
         social_cost=float(final_stage2.social_cost),
         trajectory=tuple(trajectory),
+        outer_iterations=outer_iterations,
+        stage2_oracle_calls=stage2_oracle_calls,
+        evaluated_candidates=evaluated_candidates,
+        evaluated_boundary_points=evaluated_boundary_points,
+        esp_revenue=float(esp_rev),
+        nsp_revenue=float(nsp_rev),
     )
 
 
@@ -792,5 +878,9 @@ def summarize_stackelberg_result(
         f"inner_converged = {result.inner_result.converged}",
         f"inner_iterations = {result.inner_result.iterations}",
         f"search_steps = {len(result.trajectory)}",
+        f"outer_iterations = {result.outer_iterations}",
+        f"stage2_oracle_calls = {result.stage2_oracle_calls}",
+        f"evaluated_candidates = {result.evaluated_candidates}",
+        f"evaluated_boundary_points = {result.evaluated_boundary_points}",
     ]
     return "\n".join(lines) + "\n"
