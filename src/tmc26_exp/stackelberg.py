@@ -801,6 +801,48 @@ def _best_local_price_on_fixed_set(
     return best_price, float(best_eps)
 
 
+def _perturb_restart_candidate(
+    users: UserBatch,
+    offloading_set: tuple[int, ...],
+    current_price: tuple[float, float],
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+    step_idx: int,
+) -> tuple[tuple[int, ...], tuple[float, float], float, int] | None:
+    """Try deterministic perturb-restart around current price to escape local plateaus."""
+    base_pE, base_pN = float(current_price[0]), float(current_price[1])
+    base_gE = algorithm_3_gain_approximation(users, offloading_set, base_pE, base_pN, "E", system, estimator_variant=cfg.gain_estimator_variant)
+    base_gN = algorithm_3_gain_approximation(users, offloading_set, base_pE, base_pN, "N", system, estimator_variant=cfg.gain_estimator_variant)
+    best_eps = max(base_gE.gain, base_gN.gain)
+    best: tuple[tuple[int, ...], tuple[float, float], float] | None = None
+
+    rng = np.random.default_rng(2026 + 97 * step_idx + 13 * len(offloading_set))
+    scales = (0.08, 0.2, 0.4)
+    probes: list[tuple[float, float]] = []
+    for s in scales:
+        for _ in range(4):
+            dE = float(rng.uniform(-s, s))
+            dN = float(rng.uniform(-s, s))
+            probes.append((max(system.cE, base_pE * (1.0 + dE)), max(system.cN, base_pN * (1.0 + dN))))
+
+    stage2_calls = 0
+    for pE, pN in probes:
+        s2 = algorithm_2_heuristic_user_selection(users, pE, pN, system, cfg)
+        stage2_calls += 1
+        cand_set = s2.offloading_set
+        cand_price = _refine_price_for_fixed_set(users, cand_set, (pE, pN), system)
+        gE = algorithm_3_gain_approximation(users, cand_set, cand_price[0], cand_price[1], "E", system, estimator_variant=cfg.gain_estimator_variant)
+        gN = algorithm_3_gain_approximation(users, cand_set, cand_price[0], cand_price[1], "N", system, estimator_variant=cfg.gain_estimator_variant)
+        eps = max(gE.gain, gN.gain)
+        if eps + cfg.search_improvement_tol < best_eps:
+            best_eps = eps
+            best = (cand_set, cand_price, float(eps))
+
+    if best is None:
+        return None
+    return best[0], best[1], best[2], stage2_calls
+
+
 def _compute_se_proxy_price(
     users: UserBatch,
     system: SystemConfig,
@@ -968,6 +1010,16 @@ def algorithm_5_stackelberg_guided_search(
                 current_price = local_price
                 no_improve_rounds = 0
                 continue
+
+            restart = _perturb_restart_candidate(users, current_set, current_price, system, cfg, t)
+            if restart is not None:
+                restart_set, restart_price, restart_eps, restart_calls = restart
+                stage2_oracle_calls += restart_calls
+                if restart_eps + cfg.search_improvement_tol < current_eps:
+                    current_set = restart_set
+                    current_price = restart_price
+                    no_improve_rounds = 0
+                    continue
 
             no_improve_rounds += 1
             if no_improve_rounds >= 3:

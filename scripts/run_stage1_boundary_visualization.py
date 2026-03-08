@@ -76,11 +76,16 @@ def compute_deviation_gaps(esp_csv: Path, nsp_csv: Path):
     return pE_values, pN_values, esp_gap, nsp_gap, combined_gap
 
 
-def run_and_get_trajectory(users, system, stackelberg_cfg):
-    """Run Algorithm 5 and extract price trajectory."""
+def run_and_get_trajectory(users, system, stackelberg_cfg, true_se: tuple[float, float]):
+    """Run Algorithm 5 and extract price trajectory with strict dist-to-SE alignment."""
+    if not np.isfinite(true_se[0]) or not np.isfinite(true_se[1]):
+        raise RuntimeError("dist-to-SE proxy unavailable: true_se is not finite.")
+
     result = algorithm_5_stackelberg_guided_search(users, system, stackelberg_cfg)
 
-    # Extract trajectory points
+    def _dist(pE: float, pN: float) -> float:
+        return float(((pE - true_se[0]) ** 2 + (pN - true_se[1]) ** 2) ** 0.5)
+
     trajectory = []
     for step in result.trajectory:
         trajectory.append({
@@ -88,19 +93,21 @@ def run_and_get_trajectory(users, system, stackelberg_cfg):
             "pE": step.pE,
             "pN": step.pN,
             "epsilon": step.epsilon,
-            "dist_to_se": getattr(step, "dist_to_se", float("nan")),
+            "dist_to_se": _dist(step.pE, step.pN),
             "epsilon_delta": getattr(step, "epsilon_delta", float("nan")),
         })
 
-    # Add final point
     trajectory.append({
         "iteration": len(result.trajectory),
         "pE": result.price[0],
         "pN": result.price[1],
         "epsilon": result.epsilon,
-        "dist_to_se": trajectory[-1]["dist_to_se"] if trajectory else float("nan"),
+        "dist_to_se": _dist(result.price[0], result.price[1]),
         "epsilon_delta": float("nan"),
     })
+
+    if any(not np.isfinite(float(s["dist_to_se"])) for s in trajectory):
+        raise RuntimeError("dist-to-SE progression contains NaN/Inf; aborting run.")
 
     return trajectory, result
 
@@ -314,8 +321,10 @@ def main() -> None:
         rng = np.random.default_rng(seed)
         users = sample_users(trial_cfg, rng)
 
+        true_se = baseline_stage1_grid_search_oracle(users, cfg.system, cfg.stackelberg, cfg.baselines).price
+
         # Run Algorithm 5 and get trajectory
-        trajectory, result = run_and_get_trajectory(users, cfg.system, cfg.stackelberg)
+        trajectory, result = run_and_get_trajectory(users, cfg.system, cfg.stackelberg, true_se)
 
         # Selected baselines (final points for overlay)
         pbdr = baseline_stage1_pbdr(users, cfg.system, cfg.stackelberg, cfg.baselines)
@@ -331,8 +340,6 @@ def main() -> None:
             "BO": _bo_trajectory(users, cfg.system, cfg.stackelberg, cfg.baselines),
             "DRL": _drl_trajectory(users, cfg.system, cfg.stackelberg, cfg.baselines),
         }
-        true_se = baseline_stage1_grid_search_oracle(users, cfg.system, cfg.stackelberg, cfg.baselines).price
-
         # Write trajectory CSV
         _write_trajectory_csv(trajectory, result, run_dir / f"trajectory_trial{trial}.csv")
 
