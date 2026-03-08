@@ -87,6 +87,7 @@ class BaselineConfig:
     drl_epsilon: float
     market_max_iters: int
     market_step_size: float
+    market_tol: float
     single_sp_max_iters: int
     random_offloading_trials: int
     random_offloading_prob: float
@@ -225,6 +226,7 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         drl_epsilon=float(raw.get("drl_epsilon", 0.2)),
         market_max_iters=int(raw.get("market_max_iters", 80)),
         market_step_size=float(raw.get("market_step_size", 0.2)),
+        market_tol=float(raw.get("market_tol", 1e-4)),
         single_sp_max_iters=int(raw.get("single_sp_max_iters", 200)),
         random_offloading_trials=int(raw.get("random_offloading_trials", 64)),
         random_offloading_prob=float(raw.get("random_offloading_prob", 0.5)),
@@ -259,6 +261,8 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         raise ValueError("VI/Penalty iteration limits must be positive.")
     if cfg.vi_step_size <= 0 or cfg.vi_tol <= 0 or cfg.penalty_tol <= 0:
         raise ValueError("VI/Penalty tolerances and step sizes must be positive.")
+    if cfg.market_tol <= 0:
+        raise ValueError("market_tol must be positive.")
     if cfg.penalty_init_rho <= 0 or cfg.penalty_rho_scale <= 1:
         raise ValueError("Penalty rho settings must satisfy init_rho > 0 and rho_scale > 1.")
     return cfg

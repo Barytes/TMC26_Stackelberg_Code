@@ -1034,16 +1034,35 @@ def baseline_market_equilibrium(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """
+    Market Equilibrium baseline using tatonnement-style price adjustment.
+
+    Prices are adjusted based on excess demand: if demand exceeds capacity,
+    prices increase; if demand is below capacity, prices decrease.
+    """
     pE = max(system.cE, stack_cfg.initial_pE)
     pN = max(system.cN, stack_cfg.initial_pN)
     data = _build_data(users)
-    for _ in range(base_cfg.market_max_iters):
+
+    converged = False
+    actual_iters = base_cfg.market_max_iters
+
+    for t in range(base_cfg.market_max_iters):
+        old_pE, old_pN = pE, pN
         out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
         f, b = _set_allocations(data, out.offloading_set, pE, pN, system)
         dF = float(np.sum(f)) / system.F - 1.0
         dB = float(np.sum(b)) / system.B - 1.0
         pE = max(system.cE, pE * math.exp(base_cfg.market_step_size * dF))
         pN = max(system.cN, pN * math.exp(base_cfg.market_step_size * dB))
+
+        # Convergence check: price change below tolerance
+        price_change = abs(pE - old_pE) + abs(pN - old_pN)
+        if price_change < base_cfg.market_tol:
+            actual_iters = t + 1
+            converged = True
+            break
+
     out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
     return BaselineOutcome(
         name="MarketEquilibrium",
@@ -1053,7 +1072,7 @@ def baseline_market_equilibrium(
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
         epsilon_proxy=out.epsilon_proxy,
-        meta={"iters": base_cfg.market_max_iters},
+        meta={"iters": actual_iters, "converged": converged},
     )
 
 
@@ -1063,22 +1082,43 @@ def baseline_single_sp(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """
+    Single SP baseline with personalized incentive-compatible pricing.
+
+    Mechanism (from Tutuncuoglu et al. 2024):
+    1. SP selects a subset of users to serve
+    2. For each selected user i, sets price_i = cl_i - ce_i
+    3. User i is indifferent: offload_cost + price = local_cost
+    4. SP extracts all user surplus as utility
+
+    SP Utility = Σ_{i∈X} (cl_i - ce_i) - operational_cost
+    """
     data = _build_data(users)
     off: set[int] = set()
 
-    def utility(off_set: tuple[int, ...]) -> float:
+    def sp_utility(off_set: tuple[int, ...]) -> float:
+        """Calculate SP utility with personalized pricing."""
+        if not off_set:
+            return 0.0
         pE = system.cE
         pN = system.cN
         f, b = _set_allocations(data, off_set, pE, pN, system)
-        ce = _offload_costs(data, f, b, pE, pN)
-        idx = np.asarray(off_set, dtype=int) if off_set else np.asarray([], dtype=int)
-        if idx.size and np.any(ce[idx] >= data.cl[idx]):
+        # Check resource constraints
+        if np.sum(f) > system.F + 1e-9 or np.sum(b) > system.B + 1e-9:
             return -1e18
-        user_payment = float(np.sum(data.cl[idx] - ce[idx])) if idx.size else 0.0
-        op_cost = float(system.cE * np.sum(f[idx]) + system.cN * np.sum(b[idx])) if idx.size else 0.0
-        return user_payment - op_cost
+        ce = _offload_costs(data, f, b, pE, pN)
+        idx = np.asarray(off_set, dtype=int)
+        # Check incentive constraint: ce[i] <= cl[i] for all i
+        if np.any(ce[idx] >= data.cl[idx]):
+            return -1e18
+        # SP utility = sum of personalized prices - operational cost
+        # price_i = cl_i - ce_i (extracts all user surplus)
+        user_payments = float(np.sum(data.cl[idx] - ce[idx]))
+        op_cost = float(system.cE * np.sum(f[idx]) + system.cN * np.sum(b[idx]))
+        return user_payments - op_cost
 
-    cur_u = utility(tuple())
+    # Greedy user selection: add users one by one that increase SP utility
+    current_utility = sp_utility(tuple())
     for _ in range(base_cfg.single_sp_max_iters):
         best_gain = 0.0
         best_user: int | None = None
@@ -1086,28 +1126,43 @@ def baseline_single_sp(
             if j in off:
                 continue
             cand = _sorted_tuple(list(off | {j}))
-            gain = utility(cand) - cur_u
+            gain = sp_utility(cand) - current_utility
             if gain > best_gain:
                 best_gain = gain
                 best_user = j
-        if best_user is None:
+        if best_user is None or best_gain <= 0:
             break
         off.add(best_user)
-        cur_u = utility(_sorted_tuple(list(off)))
+        current_utility = sp_utility(_sorted_tuple(list(off)))
 
-    pE = system.cE
-    pN = system.cN
-    out = _evaluate(
-        users,
-        _sorted_tuple(list(off)),
-        pE,
-        pN,
-        system,
-        stack_cfg,
-        "SingleSP",
-        meta={"utility": cur_u},
+    # Calculate final outcome with incentive-compatible pricing
+    offloading_set = _sorted_tuple(list(off))
+    f, b = _set_allocations(data, offloading_set, system.cE, system.cN, system)
+    ce = _offload_costs(data, f, b, system.cE, system.cN)
+
+    idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+    loc_idx = np.asarray([i for i in range(users.n) if i not in off], dtype=int)
+
+    # User payments with personalized pricing: price_i = cl_i - ce_i
+    esp_revenue = float(np.sum(data.cl[idx] - ce[idx])) if idx.size else 0.0
+    # Operational cost
+    op_cost = float(system.cE * np.sum(f[idx]) + system.cN * np.sum(b[idx])) if idx.size else 0.0
+    # SP utility = revenue - cost
+    sp_utility_final = esp_revenue - op_cost
+
+    # Social cost calculation
+    social_cost = float(np.sum(ce[idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+
+    return BaselineOutcome(
+        name="SingleSP",
+        price=(float(system.cE), float(system.cN)),  # Base prices for allocation
+        offloading_set=offloading_set,
+        social_cost=social_cost,
+        esp_revenue=sp_utility_final,  # SP utility (non-zero!)
+        nsp_revenue=0.0,  # No separate NSP in SingleSP model
+        epsilon_proxy=0.0,  # Centralized, no deviation incentive
+        meta={"sp_utility": sp_utility_final, "num_offloaders": len(offloading_set)},
     )
-    return out
 
 
 def baseline_random_offloading(

@@ -108,6 +108,73 @@ Implemented baselines:
 
 Stage-II derivations for the new GNEP baselines are documented in `docs/stage2_gnep_baselines.md`.
 
+---
+
+## Experiment Scripts (17 Figures)
+
+The repository includes comprehensive experiment scripts covering all paper figures. See `docs/experiment_figures.md` for full details.
+
+### Phase 1: Stage I Core Experiments (Figures 5-9)
+
+| Figure | Script | Description |
+|--------|--------|-------------|
+| Figure 5 | `run_stage1_deviation_gap_convergence.py` | Algorithm 5 epsilon convergence |
+| Figure 6 | `run_stage1_boundary_visualization.py` | Price space boundary + trajectory |
+| Figure 7 | `run_stage1_gain_approximation_accuracy.py` | Algorithm 3 gain approximation |
+| Figure 8 | `run_stage1_candidate_family_hit_rate.py` | Candidate family N(p) hit rate |
+| Figure 9 | `run_stage1_scalability.py` | Stage I scalability |
+
+### Phase 2: Stage II Completion (Figures 1-4)
+
+| Figure | Script | Description |
+|--------|--------|-------------|
+| Figure 1 | `run_stage2_convergence_plot.py` | Iteration convergence |
+| Figure 2 | `run_stage2_approximation_ratio.py` | Theorem 2 validation |
+| Figure 3 | `run_stage2_communication_rounds.py` | Communication rounds |
+| Figure 4 | `run_stage2_exploitability_comparison.py` | Exploitability comparison |
+
+### Phase 3: Strategic Settings (Figures 10-13)
+
+| Figure | Script | Description |
+|--------|--------|-------------|
+| Figure 10 | `run_strategic_social_cost.py` | User social cost |
+| Figure 11 | `run_strategic_joint_revenue.py` | Provider revenue |
+| Figure 12 | `run_strategic_pareto_tradeoff.py` | Pareto tradeoff |
+| Figure 13 | `run_strategic_fb_sensitivity.py` | F/B sensitivity |
+
+### Phase 4: Ablation Studies (Figures 14-15)
+
+| Figure | Script | Description |
+|--------|--------|-------------|
+| Figure 14 | `run_ablation_L_sensitivity.py` | Sampling density L |
+| Figure 15 | `run_ablation_guided_search.py` | Guided search ablation |
+
+### Phase 5: Appendix (A1-A2)
+
+| Figure | Script | Description |
+|--------|--------|-------------|
+| Appendix A1 | `run_appendix_final_epsilon_vs_users.py` | Final epsilon scaling |
+| Appendix A2 | `run_appendix_exploitability_vs_users.py` | Full exploitability |
+
+### Quick Test
+
+```bash
+# Stage I
+uv run python scripts/run_stage1_deviation_gap_convergence.py --trials 3
+uv run python scripts/run_stage1_scalability.py --trials 3
+
+# Stage II
+uv run python scripts/run_stage2_convergence_plot.py --trials 3
+
+# Strategic
+uv run python scripts/run_strategic_social_cost.py --trials 5
+
+# Ablation
+uv run python scripts/run_ablation_L_sensitivity.py --trials 3
+```
+
+---
+
 ## 1) Environment
 
 ```bash

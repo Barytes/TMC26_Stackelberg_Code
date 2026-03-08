@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Stage I: Boundary visualization with price trajectory overlay.
+
+This script:
+1. Loads or computes revenue contours on the (pE, pN) plane
+2. Computes deviation gap surfaces
+3. Runs Algorithm 5 to get price trajectory
+4. Plots the combined deviation gap contour with trajectory overlay
+
+Output: Contour plot with equilibrium trajectory marked.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from tmc26_exp.config import load_config
+from tmc26_exp.simulator import sample_users
+from tmc26_exp.stackelberg import algorithm_5_stackelberg_guided_search
+
+
+def load_revenue_surface(csv_path: Path):
+    """Load revenue surface from CSV file.
+
+    CSV format: pE,pN,value_mean,value_std
+    Returns: (pE_values, pN_values, revenue_values)
+    """
+    data = np.loadtxt(csv_path, delimiter=',', skiprows=1)
+    pE_values = np.unique(data[:, 0])
+    pN_values = np.unique(data[:, 1])
+    revenue = data[:, 2].reshape(pN_values.size, pE_values.size)
+    return pE_values, pN_values, revenue
+
+
+def compute_deviation_gaps(esp_csv: Path, nsp_csv: Path):
+    """Compute deviation gaps from existing revenue contours.
+
+    Returns: (pE_values, pN_values, esp_gap, nsp_gap, combined_gap)
+    """
+    pE_values, pN_values, esp_revenue = load_revenue_surface(esp_csv)
+    _, _, nsp_revenue = load_revenue_surface(nsp_csv)
+
+    # ESP deviation gap: for each pN, find max ESP revenue over all pE
+    esp_max_per_pN = np.max(esp_revenue, axis=1, keepdims=True)
+    esp_gap = esp_max_per_pN - esp_revenue
+
+    # NSP deviation gap: for each pE, find max NSP revenue over all pN
+    nsp_max_per_pE = np.max(nsp_revenue, axis=0, keepdims=True)
+    nsp_gap = nsp_max_per_pE - nsp_revenue
+
+    # Combined gap: max of both
+    combined_gap = np.maximum(esp_gap, nsp_gap)
+
+    return pE_values, pN_values, esp_gap, nsp_gap, combined_gap
+
+
+def run_and_get_trajectory(users, system, stackelberg_cfg):
+    """Run Algorithm 5 and extract price trajectory."""
+    result = algorithm_5_stackelberg_guided_search(users, system, stackelberg_cfg)
+
+    # Extract trajectory points
+    trajectory = []
+    for step in result.trajectory:
+        trajectory.append({
+            "iteration": step.iteration,
+            "pE": step.pE,
+            "pN": step.pN,
+            "epsilon": step.epsilon,
+        })
+
+    # Add final point
+    trajectory.append({
+        "iteration": len(result.trajectory),
+        "pE": result.price[0],
+        "pN": result.price[1],
+        "epsilon": result.epsilon,
+    })
+
+    return trajectory, result
+
+
+def plot_boundary_with_trajectory(
+    pE_values: np.ndarray,
+    pN_values: np.ndarray,
+    combined_gap: np.ndarray,
+    trajectory: list[dict],
+    out_path: Path,
+    n_users: int,
+) -> None:
+    """Plot combined deviation gap contour with trajectory overlay."""
+    pE_grid, pN_grid = np.meshgrid(pE_values, pN_values)
+
+    fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
+
+    # Plot combined deviation gap as filled contour
+    contourf = ax.contourf(pE_grid, pN_grid, combined_gap, levels=20, cmap="hot", alpha=0.8)
+
+    # Add contour lines
+    contour = ax.contour(pE_grid, pN_grid, combined_gap, levels=10, colors="white", linewidths=0.5, alpha=0.5)
+    ax.clabel(contour, inline=True, fontsize=7, fmt="%.1f")
+
+    # Extract trajectory coordinates
+    traj_pE = [t["pE"] for t in trajectory]
+    traj_pN = [t["pN"] for t in trajectory]
+
+    # Plot trajectory
+    ax.plot(traj_pE, traj_pN, 'c-', linewidth=2.5, marker='o', markersize=6,
+            markerfacecolor='cyan', markeredgecolor='black', markeredgewidth=1,
+            label='Algorithm 5 Trajectory', zorder=10)
+
+    # Mark start and end points
+    ax.plot(traj_pE[0], traj_pN[0], 'go', markersize=12, markeredgecolor='darkgreen',
+            markeredgewidth=2, label='Start', zorder=11)
+    ax.plot(traj_pE[-1], traj_pN[-1], 'r*', markersize=15, markeredgecolor='darkred',
+            markeredgewidth=1.5, label='Equilibrium', zorder=11)
+
+    # Colorbar
+    cbar = fig.colorbar(contourf, ax=ax)
+    cbar.set_label("Combined Deviation Gap (ε)")
+
+    ax.set_title(f"Stage I: Price Space with Algorithm 5 Trajectory\n(n={n_users} users)")
+    ax.set_xlabel("pE (ESP Price)")
+    ax.set_ylabel("pN (NSP Price)")
+    ax.legend(loc='upper right')
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _write_trajectory_csv(trajectory: list[dict], result, out_path: Path) -> None:
+    """Write trajectory data to CSV."""
+    fields = ["iteration", "pE", "pN", "epsilon"]
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for step in trajectory:
+            w.writerow({k: step[k] for k in fields})
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Stage I boundary visualization with trajectory")
+    parser.add_argument("--config", type=str, default="configs/default.toml")
+    parser.add_argument("--esp-csv", type=str, default="outputs/real_revenue_contours/esp_real_revenue.csv")
+    parser.add_argument("--nsp-csv", type=str, default="outputs/real_revenue_contours/nsp_real_revenue.csv")
+    parser.add_argument("--n-users", type=int, default=100)
+    parser.add_argument("--trials", type=int, default=1, help="Number of trials (default 1 for visualization)")
+    parser.add_argument("--seed", type=int, default=20260002)
+    parser.add_argument("--run-name", type=str, default="")
+    args = parser.parse_args()
+
+    esp_csv = Path(args.esp_csv)
+    nsp_csv = Path(args.nsp_csv)
+
+    # Check if revenue contours exist
+    use_computed_contours = esp_csv.exists() and nsp_csv.exists()
+
+    cfg = load_config(args.config)
+
+    if not args.run_name:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = f"stage1_boundary_visualization_{timestamp}"
+    else:
+        run_name = args.run_name
+    run_dir = Path(cfg.output_dir) / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    trial_cfg = replace(cfg, n_users=args.n_users)
+
+    for trial in range(args.trials):
+        seed = args.seed + trial
+        rng = np.random.default_rng(seed)
+        users = sample_users(trial_cfg, rng)
+
+        # Run Algorithm 5 and get trajectory
+        trajectory, result = run_and_get_trajectory(users, cfg.system, cfg.stackelberg)
+
+        # Write trajectory CSV
+        _write_trajectory_csv(
+            trajectory, result,
+            run_dir / f"trajectory_trial{trial}.csv"
+        )
+
+        # If revenue contours available, create visualization
+        if use_computed_contours:
+            print(f"Loading revenue contours from: {esp_csv.parent}")
+            pE_values, pN_values, esp_gap, nsp_gap, combined_gap = compute_deviation_gaps(esp_csv, nsp_csv)
+
+            plot_boundary_with_trajectory(
+                pE_values, pN_values, combined_gap, trajectory,
+                run_dir / f"boundary_visualization_trial{trial}.png",
+                args.n_users,
+            )
+            print(f"  Created visualization for trial {trial}")
+        else:
+            print(f"Revenue contours not found at: {esp_csv}")
+            print("  Run compute_real_revenue_contours.py first to generate contours.")
+            print("  Trajectory data saved without visualization.")
+
+    # Write metadata
+    meta_lines = [
+        f"timestamp_utc = {datetime.now(timezone.utc).isoformat()}",
+        f"config = {args.config}",
+        f"n_users = {args.n_users}",
+        f"trials = {args.trials}",
+        f"seed = {args.seed}",
+        f"esp_csv = {args.esp_csv}",
+        f"nsp_csv = {args.nsp_csv}",
+        f"contours_available = {use_computed_contours}",
+    ]
+    (run_dir / "run_meta.txt").write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
+
+    print(f"\nDone. Results written to: {run_dir}")
+
+
+if __name__ == "__main__":
+    main()
