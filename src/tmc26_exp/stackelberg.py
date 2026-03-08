@@ -734,6 +734,42 @@ def _refine_price_for_fixed_set(
     return float(pE), float(pN)
 
 
+def _best_local_price_on_fixed_set(
+    users: UserBatch,
+    offloading_set: tuple[int, ...],
+    price: tuple[float, float],
+    system: SystemConfig,
+) -> tuple[tuple[float, float], float]:
+    """Try local boundary-guided price updates while keeping the offloading set fixed."""
+    data = _build_data(users)
+    pE, pN = float(price[0]), float(price[1])
+    brE = _boundary_price_for_provider(data, offloading_set, pN, "E", system)
+    brN = _boundary_price_for_provider(data, offloading_set, pE, "N", system)
+    tgtE = float(brE) if brE is not None else pE
+    tgtN = float(brN) if brN is not None else pN
+
+    candidates: list[tuple[float, float]] = [(pE, pN)]
+    for alpha in (0.35, 0.65, 1.0):
+        cE = max(system.cE, (1.0 - alpha) * pE + alpha * tgtE)
+        cN = max(system.cN, (1.0 - alpha) * pN + alpha * tgtN)
+        candidates.append((float(cE), float(cN)))
+
+    best_price = candidates[0]
+    gE = algorithm_3_gain_approximation(users, offloading_set, best_price[0], best_price[1], "E", system)
+    gN = algorithm_3_gain_approximation(users, offloading_set, best_price[0], best_price[1], "N", system)
+    best_eps = max(gE.gain, gN.gain)
+
+    for cand in candidates[1:]:
+        cE_gain = algorithm_3_gain_approximation(users, offloading_set, cand[0], cand[1], "E", system)
+        cN_gain = algorithm_3_gain_approximation(users, offloading_set, cand[0], cand[1], "N", system)
+        cand_eps = max(cE_gain.gain, cN_gain.gain)
+        if cand_eps < best_eps:
+            best_eps = cand_eps
+            best_price = cand
+
+    return best_price, float(best_eps)
+
+
 def _compute_se_proxy_price(
     users: UserBatch,
     system: SystemConfig,
@@ -807,10 +843,13 @@ def algorithm_5_stackelberg_guided_search(
     current_set = init_stage2.offloading_set
     current_price = _refine_price_for_fixed_set(users, current_set, initial_price, system)
 
-    se_pE, se_pN = _compute_se_proxy_price(users, system, cfg)
+    se_pE, se_pN = float("nan"), float("nan")
+    if users.n <= 16:
+        se_pE, se_pN = _compute_se_proxy_price(users, system, cfg)
     trajectory: list[SearchStep] = []
     outer_iterations = 0
     prev_eps: float | None = None
+    no_improve_rounds = 0
 
     for t in range(cfg.search_max_iters):
         outer_iterations = t + 1
@@ -866,14 +905,25 @@ def algorithm_5_stackelberg_guided_search(
                     best_candidate = candidate_set
 
         if best_candidate is None:
-            stopping_reason = "no_improving_candidate"
-            break
+            local_price, local_eps = _best_local_price_on_fixed_set(users, current_set, current_price, system)
+            if local_eps + cfg.search_improvement_tol < current_eps:
+                current_price = local_price
+                no_improve_rounds = 0
+                continue
+
+            no_improve_rounds += 1
+            if no_improve_rounds >= 3:
+                stopping_reason = "no_improving_candidate"
+                break
+            continue
+
         if best_candidate == current_set:
             stopping_reason = "fixed_point_reached"
             break
 
         current_set = best_candidate
         current_price = _refine_price_for_fixed_set(users, current_set, current_price, system)
+        no_improve_rounds = 0
 
     final_set = current_set
     final_gain_E = algorithm_3_gain_approximation(users, final_set, current_price[0], current_price[1], "E", system)
