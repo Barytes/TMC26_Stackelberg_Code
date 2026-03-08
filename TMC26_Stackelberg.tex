@@ -52,7 +52,7 @@
 \maketitle
 
 \begin{abstract}
-Mobile Edge Computing (MEC) is a promising paradigm to support computation-intensive applications by allowing user devices to offload tasks to the network edge. In practice, the MEC ecosystem involves multiple self-interested entities, including Edge Service Providers (ESPs) and Network Service Providers (NSPs) offering complementary computation and bandwidth resources, respectively, alongside users competing for these limited resources. Existing works often overlook the complex strategic pricing interactions between independent service providers and the coupled offloading competition among users. In this paper, we model this ecosystem as a two-stage Multi-Leader Multi-Follower (MLMF) Stackelberg game. In Stage I, an ESP and a NSP competitively price their resources to maximize revenues. In Stage II, users make selfish offloading and resource purchasing decisions to minimize their costs. We prove that the Stage II user offloading game is an exact generalized potential game and show that computing the socially optimal equilibrium is fundamentally NP-hard. To solve it, we design a distributed primal-dual resource allocation algorithm and a heuristic offloading user selection algorithm with a provable approximation bound. For Stage I, to tackle the discontinuity of the users' equilibrium response, we introduce the concept of Restricted Pricing Space. We transform the intractable continuous pricing game into a Best Response Gain Minimization (BRGM) problem over the space of discrete offloading user sets, and propose a guided search algorithm to efficiently compute the Stackelberg equilibrium. Extensive simulations demonstrate the convergence and efficiency of our proposed algorithms in balancing the service providers' revenues and users' offloading costs.
+Mobile Edge Computing (MEC) is a promising paradigm to support computation-intensive applications by allowing user devices to offload tasks to the network edge. In practice, the MEC ecosystem involves multiple self-interested entities, including Edge Service Providers (ESPs) and Network Service Providers (NSPs) offering complementary computation and bandwidth resources, respectively, alongside users competing for these limited resources. Existing works often overlook the complex strategic pricing interactions between independent service providers and the coupled offloading competition among users. In this paper, we model this ecosystem as a two-stage Multi-Leader Multi-Follower (MLMF) Stackelberg game. In Stage I, an ESP and a NSP competitively price their resources to maximize revenues. In Stage II, users compete for the limited resources to minimize their costs. We prove that the Stage II user offloading game is an exact generalized potential game and show that computing the socially optimal equilibrium is NP-hard. To solve it, we design a distributed primal-dual resource allocation algorithm and a heuristic offloading user selection algorithm with a provable approximation bound. For Stage I, to tackle the discontinuity of the users' equilibrium response, we introduce the concept of Restricted Pricing Space. We transform the intractable continuous pricing game into a Best Response Gain Minimization (BRGM) problem over the space of discrete offloading user sets, and propose a guided search algorithm to efficiently compute the Stackelberg equilibrium. Extensive simulations demonstrate the convergence and efficiency of our proposed algorithms in computing the Stackelberg equilibrium.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -62,11 +62,11 @@ Article submission, IEEE, IEEEtran, journal, \LaTeX, paper, template, typesettin
 \section{Introduction}
 \IEEEPARstart{R}{ecent} advances of AI applications (e.g., LLM-based mobile agents \cite{wang2024mobile,wen2024autodroid}, embodied robots \cite{DeepMind_Gemini_Robotics_OnDevice,zitkovich2023rt}, world models for autonomous vehicles \cite{zhao2025drivedreamer,wang2024drivedreamer}) highlight an increasing intensity of computation. However, most user devices cannot support such applications due to limited computation capacity. To resolve this conflict, Mobile Edge Computing (MEC) \cite{chen2015efficient,abbas2017mobile} is a promising computing paradigm. It places computation resources at the network edge close to user devices. Users can access these resources by offloading their computation-intensive tasks to nearby edge servers via wireless networks, thereby reducing task delay and saving energy.
 
-In practice, the MEC ecosystem involves multiple self-interested entities. The computation resources at the edge server are provided and managed by Edge Service Providers (ESPs), such as AWS Wavelength, Huawei Intelligent EdgeCloud, and Google Distributed Cloud. Concurrently, the wireless network resources required for data transmission are managed by Network Service Providers (NSPs). Both ESPs and NSPs are profit-driven entities that aim to maximize their revenues by strategically pricing their respective resources. Meanwhile, mobile users are also rational and self-interested. They compete for limited computation and network resources to minimize their individual costs, which comprise execution delay, energy consumption, and payments to the service providers.
+In practice, the MEC ecosystem involves multiple self-interested entities. The computation resources at the edge server are provided and managed by Edge Service Providers (ESPs) (\eg, AWS Wavelength and Huawei Intelligent EdgeCloud \etc). Concurrently, the wireless network resources required for data transmission are managed by Network Service Providers (NSPs), (\eg, China Telecom and AT\&T). Both ESPs and NSPs are profit-driven entities that aim to maximize their revenues by strategically pricing their respective resources. Meanwhile, mobile users are also rational and self-interested. They compete for limited computation and network resources to minimize their individual costs, which comprise execution delay, energy consumption, and payments to the service providers.
 
-While extensive research has investigated task offloading and resource allocation in MEC \cite{9, 10, 11}, the majority of these works focus on centralized system-wide optimization, neglecting the strategic behaviors of the entities. Some game-theoretic studies have explored users' offloading competition \cite{12, 13, 14} or service provider pricing \cite{16, 17, 19}. However, they typically assume a single centralized operator managing all resources or focus solely on service providers of the same resource type \cite{15, 20}. To the best of our knowledge, the complex strategic interactions involving independent service providers offering \textit{complementary} resources (i.e., computation and bandwidth) alongside users' selfish offloading competition remain unexplored.
+While extensive research has investigated task offloading, resource allocation in MEC \cite{wang2025trust,wei2024quantum,dai2025throughput,hu2020heterogeneous,chen2024multi,chu2023efficient,chen2024price,tong2024stackelberg,wang2022monetizing,ding2023optimal,tutuncuoglu2024joint,wang2022profit,liu2022resource,wang2023marginal}, the majority of these works focus on optimizing system-wide metrics \cite{wang2025trust,wei2024quantum,dai2025throughput}, neglecting the strategic behaviors of the entities. Some game-theoretic studies have investigated users' strategic offloading competition \cite{hu2020heterogeneous,chen2024multi,chu2023efficient}, but they typically consider simplified user decisions, such as binary offloading, subtask-level decisions, or competition over a single resource dimension. Another line of work studies pricing mechanisms in MEC \cite{chen2024price,tong2024stackelberg,wang2022monetizing,ding2023optimal,tutuncuoglu2024joint,wang2022profit,liu2022resource,wang2023marginal}. However, these studies either consider a single service provider or a centralized operator jointly managing multiple resources \cite{tong2024stackelberg,wang2022monetizing,tutuncuoglu2024joint,wang2023marginal}, or involve multiple providers without explicitly capturing the strategic interaction between independent providers of complementary computation and network resources \cite{chen2024price,ding2023optimal,wang2022profit,liu2022resource}. To the best of our knowledge, the strategic interplay between an ESP and an NSP offering \textit{complementary} resources (\ie, computation and bandwidth), together with users' selfish offloading competition under coupled computation and bandwidth constraints, remains unexplored.
 
-Capturing such interactions presents significant technical challenges. First, due to the coupled resource capacity constraints, users' offloading strategies are highly interdependent, forming a Generalized Nash Equilibrium Problem (GNEP). We prove that computing the Socially Optimal Equilibrium (SOE) for users is fundamentally NP-hard. Second, the service providers' pricing game heavily relies on the users' equilibrium response. Because the users' equilibrium offloading set changes discontinuously with prices and lacks a closed-form expression, the providers' revenues cannot be explicitly formulated. This makes traditional continuous game-theoretic approaches and bilevel optimization techniques (such as MPEC or EPEC) computationally intractable.
+Capturing such interactions presents significant technical challenges. First, due to the coupled resource capacity constraints, users' offloading strategies are highly interdependent, forming a Generalized Nash Equilibrium Problem (GNEP). We prove that computing the Socially Optimal Equilibrium (SOE) for users is fundamentally NP-hard. Second, the service providers' pricing game heavily relies on the users' equilibrium response. Because the users' equilibrium offloading user set changes discontinuously with prices and lacks a closed-form expression, the providers' revenues cannot be explicitly formulated. This makes traditional continuous game-theoretic approaches and bilevel optimization techniques (such as MPEC or EPEC) computationally intractable.
 
 To overcome these challenges, we model the strategic interactions between the ESP, the NSP, and the users as a two-stage Multi-Leader Multi-Follower (MLMF) Stackelberg game. In Stage I, the ESP and the NSP act as leaders, competitively setting prices for their complementary resources. In Stage II, users act as followers, making task offloading and resource purchasing decisions. The main contributions of this paper are summarized as follows:
 
@@ -109,7 +109,7 @@ Chen \etal \cite{chen2024price} investigate edge servers' price competition and 
 Ding \etal \cite{ding2023optimal} investigate optimal pricing strategies in IoT systems involving multiple service providers under coordinated and uncoordinated interaction structures.
 Wang \etal \cite{wang2022profit} design profit-maximization incentive mechanisms for edge clouds in MEC, formulating a market-based optimization model for non-competitive settings and proposing an online multi-round auction mechanism for competitive environments. 
 Liu \etal \cite{liu2022resource} develop a market model involving multiple edge clouds, access points, and smart mobile devices in MEC, where computation and radio resources are provided by the edge clouds and access points, respectively. They apply microeconomic theory to derive the optimal budget allocation for smart devices and design an equilibrium price finding algorithm that jointly determines the market equilibrium prices of these resources.
-The above works either focus on service providers of the same resource type (e.g., computation) \cite{chen2024price,wang2022profit}, neglect the selfishness of service providers \cite{liu2022resource}, or fail to capture the strategic interactions between the ESP and the NSP \cite{ding2023optimal}.
+The above works either focus on service providers of the same resource type (\eg, computation) \cite{chen2024price,wang2022profit}, neglect the selfishness of service providers \cite{liu2022resource}, or fail to capture the strategic interactions between the ESP and the NSP \cite{ding2023optimal}.
 
 In this paper, we study the selfish pricing behaivours of the ESP and the NSP while accounting for users' offloading competition. We capture the strategic interactions of the two service providers offering complementary computation and network resources, which is a practically relevant yet previously unexplored aspect in MEC.
 
@@ -785,7 +785,7 @@ We first introduce the concept of $\epsilon$-approximate Nash equilibrium. Recal
     \mathscr{G}_k=\max_{p_k'}\;U_k(p_k',p_{-k})-U_k(p_k,p_{-k})\quad\text{s.t.}\;(p_k',p_{-k})\in\mathcal{P}
 \end{equation}
 We now define the  $\epsilon$-approximate Nash equilibrium ($\epsilon$-NE) of the Stage I pricing game.
-\begin{definition}
+\begin{definition}\label{eps-ne}
     A price profile $\boldsymbol{p}^*$ is an $\epsilon$-approximate Nash equilibrium if $\max\{\mathscr{G}_E(\boldsymbol p^*),\mathscr{G}_N(\boldsymbol p^*)\}\le\epsilon$.
 \end{definition}
 
@@ -979,19 +979,14 @@ U_k\bigl((\bar p_k(\mathcal{Y}\mid p_{-k}),p_{-k}),\mathcal{Y}\bigr)-U_k(\boldsy
 \end{equation}
 These two sets represent the offloading user sets that the service providers are incentivized to deviate toward. We evaluate the approximation gap $\epsilon(\mathcal{Y})$ for each $\mathcal{Y}\in\{\mathcal{Y}_E^*(\boldsymbol{p}), \mathcal{Y}_N^*(\boldsymbol{p})\}$, and adopt $\mathcal{Y}$ as the new set only if it strictly reduces the overall approximation gap, \ie, $\epsilon(\mathcal{Y}) < \epsilon(\mathcal{X})$. This guarantees finite termination within the set space $2^{\mathcal I}$.
 
-\smallskip
-\noindent\textbf{Termination and Solution Interpretation.}
-Upon termination at $(X^\star,p^\star)$, the condition $\epsilon(Y) \ge \epsilon(X^\star)$ holds for all candidate sets $Y \in \{Y_E^\star(p^\star),Y_N^\star(p^\star)\}\cup N(p^\star)$.
-Therefore, $(X^\star,p^\star)$ constitutes a local optimum within the defined neighborhood structure. 
-Furthermore, the value $\epsilon(X^\star)=\max\{\hat G_E(p^\star),\hat G_N(p^\star)\}$ provides a verifiable certificate, bounding the maximum unilateral deviation gain and establishing the output as an $\epsilon$-NE (Definition~10).
+Algorithm~\ref{alg:brgd} terminates at a pair $(\mathcal{X}^*,\boldsymbol{p}^*)$ for which no candidate offloading user set in the local search region yields a smaller deviation gap. In particular, at termination we have
+$\epsilon(\mathcal{Y}) \ge \epsilon(\mathcal{X}^*)$ for all
+$\mathcal{Y} \in \{\mathcal{Y}_E^*(\boldsymbol{p}^*),\mathcal{Y}_N^*(\boldsymbol{p}^*)\}\cup \mathcal{N}(\boldsymbol{p}^*)$.
+Hence, $(\mathcal{X}^*,\boldsymbol{p}^*)$ is a local optimum under the neighborhood structure induced by $\mathcal{N}(\boldsymbol{p}^*)$.
+Moreover, the achieved gap
+$\epsilon(\mathcal{X}^*)=\max\{\hat G_E(\boldsymbol{p}^*),\hat G_N(\boldsymbol{p}^*)\}$ upper bounds the maximum unilateral deviation gain of either provider at $\boldsymbol{p}^*$, and the output hence constitutes an $\epsilon(\mathcal{X}^*)$-NE by Definition~\ref{eps-ne}.
 
-\smallskip
-\noindent\textbf{Complexity.}
-The computational overhead per iteration is dominated by Algorithm~4, which evaluates $L$ boundary points and calls Algorithm~3 at each point. 
-By Proposition~4, Algorithm~3 operates in $O(|I|^3)$ time. 
-In each outer iteration of Algorithm~\ref{alg:brgd}, the initial phase evaluates at most two candidate sets. The subsequent neighborhood evaluation, triggered only if the initial phase yields no improvement, processes $|N(p)|=O(|I|^2)$ candidates. 
-Thus, the worst-case per-iteration complexity is $O(L \cdot |I|^5)$. 
-While the theoretical maximum number of iterations is exponential, evaluating the providers' exact deviation targets early in the loop effectively guides the search direction, yielding practical convergence within a small number of steps.
+The per-iteration cost is dominated by the RNE subroutine in Algorithm~\ref{alg:optimal_rne}, which evaluates $L$ boundary points and invokes Algorithm~\ref{alg:brgd} at each point. By Proposition~\ref{prop:gain-complexity}, each call to Algorithm~\ref{alg:brgd} runs in $O(|\mathcal{I}|^3)$ time. In an outer iteration of Algorithm~\ref{alg:brgd}, the initialization stage evaluates at most two candidate sets, and the neighborhood stage---which is triggered only when no improvement is found in the initialization---enumerates $|\mathcal{N}(\bm p)|=O(|\mathcal{I}|^2)$ candidates. Therefore, the worst-case per-iteration complexity is $O(L\cdot|\mathcal{I}|^5)$. Although the worst-case iteration count can be exponential in principle, prioritizing the exact deviation targets of the providers early in each iteration yields a strongly directed search in practice, and we observe convergence within a small number of iterations in our experiments.
 
 \section{EXPERIMENTAL RESULTS}
 \label{sec:experiments}
@@ -1001,9 +996,24 @@ In this section, we evaluate the performance of the proposed algorithms through 
 \subsection{Experimental Setup}
 
 \subsubsection{Simulation Settings}
-We consider a MEC system where users are randomly distributed within a circular area with a radius of $500$ m. The background noise power $N_0$ is set to $-114$ dBm, and the channel gain $\hat{g}_i$ is modeled following the path loss model $128.1 + 37.6 \log_{10}(d)$ (where $d$ is in km)[cite: 79, 722]. For users' tasks, the input data size $d_i$ is uniformly distributed in $[1, 5]$ Mbits, and the computation workload $w_i$ is uniformly distributed in $[0.1, 1.0]$ Gcycles[cite: 59, 733]. The local computation resource $f_i^l$ is randomly selected from $\{0.5, 0.8, 1.0, 1.2\}$ GHz[cite: 66, 755]. 
+Unless otherwise specified, we consider a MEC system with a user set $\mathcal{I}$, where $|\mathcal{I}|$ varies up to $100$.
+The users are randomly distributed in a circular area with radius $500$ m centered at the NSP's base station.
+Let $r_i$ denote the distance between user $i$ and the base station.
+The large-scale path loss is modeled by the 3GPP urban macro formula
+$L(r_i)=128.1+37.6\log_{10}(r_i)$ (dB), where $r_i$ is measured in km.
+The channel gain between user $i$ and the base station is given by
+$\hat g_i=h_i\cdot 10^{-L(r_i)/10}$,
+where $h_i$ captures small-scale fading and is independently drawn from a unit-mean exponential distribution.
+The background noise power is set to $N_0=-114$ dBm, and the transmission power $\rho_i$ is uniformly sampled from $[0.1,2]$ W.
 
-Regarding the cost parameters, the unit operational costs for the ESP and the NSP are set to $c_E = 0.1$ and $c_N = 0.1$, respectively[cite: 114, 120]. The marginal monetary costs for delay $\alpha_i$ and energy $\beta_i$ are uniformly distributed in $[1, 2]$ and $[0.1, 0.5]$, respectively, reflecting users' diverse sensitivities[cite: 101, 102]. The default resource capacities are $F = 20$ GHz and $B = 50$ MHz unless otherwise specified[cite: 113, 119].
+For each user $i\in\mathcal{I}$, the task input data size $d_i$ is uniformly distributed in $[1,5]$ Mbits, and the computation workload $w_i$ is uniformly distributed in $[0.1,1.0]$ Gcycles.
+The local CPU frequency $f_i^l$ is randomly selected from $\{0.5,0.8,1.0,1.2\}$ GHz.
+The delay and energy cost coefficients $\alpha_i$ and $\beta_i$ are independently sampled from $[1,2]$ and $[0.1,0.5]$, respectively, to capture heterogeneous user preferences.
+Unless otherwise specified, we set $\kappa_i=10^{-27}$ and $\varpi_i = 1/\eta_{\rm PA}$ with $\eta_{\rm PA}=0.35$ for all $i\in\mathcal{I}$.
+
+The resource capacities of the ESP and NSP are set to $F=20$ GHz and $B=50$ MHz, respectively.
+Their unit operational costs are set to $c_E=c_N=0.1$.
+For each parameter setting, all reported results are averaged over multiple independent random instances.
 
 \subsubsection{Baseline Methods}
 To rigorously evaluate the proposed framework, we compare it against various baseline methods categorized into three distinct groups: Stage II user equilibrium solvers, Stage I pricing equilibrium solvers, and overall strategic settings.
@@ -1013,7 +1023,15 @@ To evaluate the efficiency and optimality of our proposed distributed algorithms
 \begin{itemize}
     \item \textbf{Centralized Solver (CS):} Directly solves the NP-hard Social Cost Minimization (SCM) problem using off-the-shelf centralized MINLP solvers. It provides the exact Socially Optimal Equilibrium (SOE) but incurs exponential computational complexity.
     \item \textbf{User Best Response Dynamics (UBRD):} Users iteratively update their offloading decisions and resource demands to minimize their individual costs given other users' current strategies, until reaching a Generalized Nash Equilibrium (GNE).
-    \item \textbf{Uniform Resource Allocation (URA):} A heuristic scheme where users selfishly decide to offload, but the edge server and base station allocate computation and bandwidth resources uniformly among all offloading users, disregarding the optimal shadow price-based allocation.
+    \item \textbf{Variational Inequality Baseline (VI):} 
+    We adopt a shared-multiplier \emph{variational equilibrium} baseline for the Stage-II generalized Nash equilibrium problem. 
+    For any given offloading set, the coupled capacity constraints are handled via common shadow prices, and each offloading user admits a closed-form optimal demand as a function of these prices. 
+    We then update the shadow prices by projected dual ascent to satisfy the computation and bandwidth capacity constraints, and finally apply a simple feasibility repair on the offloading set if necessary.
+
+    \item \textbf{Penalty Best-Response Baseline (PEN):} 
+    We implement a penalty-based sequential best-response baseline by relaxing the coupled capacity constraints into users' objectives through quadratic penalty terms. 
+    Given others' current demands, each user updates its offloading decision and resource demands by minimizing a penalized individual cost (which reduces to two one-dimensional convex subproblems for computation and bandwidth). 
+    The penalty coefficient is increased progressively to enforce feasibility, and a lightweight repair step is applied if residual capacity violations remain.
 \end{itemize}
 
 \textbf{b) Baselines for Stage I Pricing Equilibrium:}
@@ -1028,13 +1046,236 @@ To evaluate the performance of our proposed guided search algorithm for the Stac
 \textbf{c) Baselines for Strategic Settings:}
 To demonstrate the necessity and superiority of modeling the exact strategic interactions among the ESP, the NSP, and the users, we compare our overall MLMF Stackelberg framework with the following strategic setting baselines:
 \begin{itemize}
-    \item \textbf{Market Equilibrium:} Inspired by \citet{liu2022resource}, this baseline searches for the market equilibrium prices at which the user equilibrium induces an aggregate demand equal to the total resource supply. This baseline captures a \emph{non-strategic multi-provider} model with \emph{competitive users}.
-    \item \textbf{SingleSP:} Inspired by \citet{Tutuncuoglu2024joint}, this baseline assumes a single provider managing both resources, who greedily selects offloaders and centrally optimizes resource allocation to maximize utility, with users paying the cost savings from offloading. This baseline highlights a \emph{single selfish provider} model with \emph{non-competitive users}.
+    \item \textbf{Market Equilibrium:} Inspired by \cite{liu2022resource}, this baseline searches for the market equilibrium prices at which the user equilibrium induces an aggregate demand equal to the total resource supply. This baseline captures a \emph{non-strategic multi-provider} model with \emph{competitive users}.
+    \item \textbf{SingleSP:} Inspired by \cite{tutuncuoglu2024joint}, this baseline assumes a single provider managing both resources, who greedily selects offloaders and centrally optimizes resource allocation to maximize utility, with users paying the cost savings from offloading. This baseline highlights a \emph{single selfish provider} model with \emph{non-competitive users}.
     \item \textbf{Random Offloading:} This baseline randomly selects users as offloaders and computes the corresponding pricing equilibrium with Algorithm \ref{alg:optimal_rne}. It captures a \emph{strategic multi-provider} model with \emph{non-strategic users}.
 \end{itemize}
 
-\subsubsection{Implementation Details}
-The proposed distributed algorithms are implemented in Python 3.10. The simulation results are averaged over $100$ independent trials to ensure statistical significance. For the multi-direction boundary sampling in Algorithm 4, the number of sampled directions is set to $L = 20$ to balance computation cost and solution quality[cite: 637, 642]. The tolerance for convergence in the primal-dual updates is set to $\epsilon = 10^{-4}$[cite: 273, 319].
+\subsection{Results TODO}
+\begin{itemize}
+  \item \textbf{Stage II (User-side SOE computation).}
+  \begin{itemize}
+    \item \textbf{(S2-1) Social-cost convergence.}
+    \begin{itemize}
+      \item \emph{x-axis:} iteration index (outer iteration if nested).
+      \item \emph{y-axis:} total social cost $\sum_{i\in\mathcal I} C_i(\cdot)$ (or the potential / social cost objective).
+      \item \emph{Baselines:} centralized solver (small $|\mathcal I|$ only), greedy-only / random feasible solution.
+      \item \emph{Plot:} line plot (multiple curves).
+    \end{itemize}
+
+    \item \textbf{(S2-2) Exploitability / equilibrium violation convergence.}
+    \begin{itemize}
+      \item \emph{x-axis:} iteration index.
+      \item \emph{y-axis:} average exploitability
+      $
+      \frac1{|\mathcal I|}\sum_{i\in\mathcal I}\bigl(C_i(\text{current})-C_i(\text{BR}_i)\bigr)_+
+      $
+      (and/or max exploitability).
+      \item \emph{Baselines:} centralized solver (small $|\mathcal I|$), greedy-only, random feasible.
+      \item \emph{Plot:} line plot.
+    \end{itemize}
+
+    \item \textbf{(S2-3) Approximation gap vs. system size (validating Theorem~2).}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$ (small-scale regime where the optimum is computable).
+      \item \emph{y-axis:} relative gap
+      $
+      \frac{V_{\text{alg}}-V_{\text{opt}}}{V_{\text{opt}}}\times 100\%
+      $.
+      \item \emph{Baselines:} centralized solver as $V_{\text{opt}}$; optionally a naive greedy baseline.
+      \item \emph{Plot:} bar plot or line plot with error bars (across random instances).
+    \end{itemize}
+
+    \item \textbf{(S2-4) Wall-clock runtime scalability.}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$ (e.g., $10\rightarrow 100\rightarrow 500$).
+      \item \emph{y-axis:} runtime in seconds (wall-clock).
+      \item \emph{Baselines:} centralized solver (until timeout), greedy-only baseline.
+      \item \emph{Plot:} (semi-)log line plot.
+    \end{itemize}
+
+    \item \textbf{(S2-5, optional) Offloading ratio / $|X|$.}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$ or resource capacities $(F,B)$ / ratio $F/B$.
+      \item \emph{y-axis:} $|X|/|\mathcal I|$ (or $|X|$).
+      \item \emph{Baselines:} centralized solver (small $|\mathcal I|$), random offloading, heuristic thresholding.
+      \item \emph{Plot:} line plot or grouped bars.
+    \end{itemize}
+
+    \item \textbf{(S2-6, optional) Decomposition ablation (Alg.~1 vs Alg.~2 contributions).}
+    \begin{itemize}
+      \item \emph{x-axis:} algorithm variants (Alg.~1 only / Alg.~2+Alg.~1 / Alg.~2 without inner refinement).
+      \item \emph{y-axis:} social cost and/or exploitability.
+      \item \emph{Baselines:} variant comparison (plus centralized solver if feasible).
+      \item \emph{Plot:} grouped bar plot.
+    \end{itemize}
+  \end{itemize}
+
+  \item \textbf{Stage I (Pricing equilibrium / Stackelberg computation).}
+  \begin{itemize}
+    \item \textbf{(S1-1) Deviation-gap certificate vs. iteration.}
+    \begin{itemize}
+      \item \emph{x-axis:} outer iteration index of Algorithm~5.
+      \item \emph{y-axis:} deviation gap / certificate
+      $
+      \epsilon^{(t)}=\max\{\hat G_E(\bm p^{(t)}),\hat G_N(\bm p^{(t)})\}
+      $.
+      \item \emph{Baselines:} Algorithm~5, provider best-response dynamics (PBRD), Bayesian optimization (BO), DRL; grid search oracle (GSO) for small instances.
+      \item \emph{Plot:} line plot.
+    \end{itemize}
+
+    \item \textbf{(S1-2) Final deviation gap vs. $|\mathcal I|$.}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$.
+      \item \emph{y-axis:} final $\epsilon$ (or final deviation gap).
+      \item \emph{Baselines:} Algorithm~5,  PBRD, BO, DRL, (GSO for small $|\mathcal I|$).
+      \item \emph{Plot:} line plot or grouped bars.
+    \end{itemize}
+
+    \item \textbf{(S1-3) Runtime vs. $|\mathcal I|$ (pricing-level scalability).}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$.
+      \item \emph{y-axis:} wall-clock time (seconds).
+      \item \emph{Baselines:} Algorithm~5, PBRD, BO, DRL, (GSO small-scale).
+      \item \emph{Plot:} (semi-)log line plot.
+    \end{itemize}
+
+    \item \textbf{(S1-4) Search budget: \# evaluated price points / \# Stage-II calls.}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$.
+      \item \emph{y-axis:} (i) number of evaluated price points, and/or (ii) number of Stage-II solver calls.
+      \item \emph{Baselines:} Algorithm~5, PBRD, BO, (GSO).
+      \item \emph{Plot:} bar plot or line plot.
+    \end{itemize}
+
+    \item \textbf{(S1-5, optional) Price trajectory in the $(p_E,p_N)$ plane.}
+    \begin{itemize}
+      \item \emph{x-axis:} $p_E$; \emph{y-axis:} $p_N$.
+      \item \emph{Baselines:} Algorithm~5 (optionally overlay BGSS/PDSS).
+      \item \emph{Plot:} 2D trajectory (scatter + arrows).
+    \end{itemize}
+
+    \item \textbf{(S1-6, optional) Landscape visualization (small instance).}
+    \begin{itemize}
+      \item \emph{x-axis:} $p_E$; \emph{y-axis:} $p_N$.
+      \item \emph{Color:} $\epsilon(p_E,p_N)$ (or $\max\{G_E,G_N\}$).
+      \item \emph{Baselines:} none (overlay Algorithm~5 trajectory).
+      \item \emph{Plot:} heatmap / contour.
+    \end{itemize}
+  \end{itemize}
+
+  \item \textbf{Strategic-setting comparisons (system-level outcomes).}
+  \begin{itemize}
+    \item \textbf{(ST-1) Total user social cost across strategic settings.}
+    \begin{itemize}
+      \item \emph{x-axis:} system load (e.g., $|\mathcal I|$ or mean $w_i$).
+      \item \emph{y-axis:} total user social cost.
+      \item \emph{Baselines:} Full model (Alg.~5 + Alg.~1/2), Market Equilibrium, SingleSP, Fixed pricing, Random offloading.
+      \item \emph{Plot:} line plot.
+    \end{itemize}
+
+    \item \textbf{(ST-2) Total provider revenue $U_E+U_N$ across settings.}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$ or $(F,B)$ / $F/B$.
+      \item \emph{y-axis:} $U_E+U_N$.
+      \item \emph{Baselines:} same as ST-1.
+      \item \emph{Plot:} line plot.
+    \end{itemize}
+
+    \item \textbf{(ST-3) Provider split: ESP revenue $U_E$ and NSP revenue $U_N$.}
+    \begin{itemize}
+      \item \emph{x-axis:} $F/B$ ratio (recommended) or $|\mathcal I|$.
+      \item \emph{y-axis:} $U_E$ (and separately $U_N$).
+      \item \emph{Baselines:} same as ST-1.
+      \item \emph{Plot:} two line plots (or one figure with two subplots).
+    \end{itemize}
+
+    \item \textbf{(ST-4, optional) Resource utilization (showing complementarity).}
+    \begin{itemize}
+      \item \emph{x-axis:} $|\mathcal I|$ or $F/B$.
+      \item \emph{y-axis:} computation utilization $\sum_i f_i/F$ and bandwidth utilization $\sum_i b_i/B$.
+      \item \emph{Baselines:} Full model, SingleSP, Fixed pricing.
+      \item \emph{Plot:} two line plots (or two subplots).
+    \end{itemize}
+  \end{itemize}
+
+  \item \textbf{Ablation studies.}
+  \begin{itemize}
+    \item \textbf{(AB-1) Sampling density $L$ vs. equilibrium accuracy.}
+    \begin{itemize}
+      \item \emph{x-axis:} $L$ (number of sampled boundary directions / points).
+      \item \emph{y-axis:} final deviation gap $\epsilon$.
+      \item \emph{Baselines:} none (or multiple curves for different $|\mathcal I|$).
+      \item \emph{Plot:} line plot.
+    \end{itemize}
+
+    \item \textbf{(AB-2) Sampling density $L$ vs. computational cost.}
+    \begin{itemize}
+      \item \emph{x-axis:} $L$.
+      \item \emph{y-axis:} runtime and/or \# Stage-II calls.
+      \item \emph{Baselines:} none.
+      \item \emph{Plot:} line plot (often paired with AB-1 as two subplots).
+    \end{itemize}
+
+    \item \textbf{(AB-3, optional) Neighborhood / initialization sensitivity.}
+    \begin{itemize}
+      \item \emph{x-axis:} variants (neighborhood on/off; different initializations).
+      \item \emph{y-axis:} final $\epsilon$ and runtime.
+      \item \emph{Baselines:} variant comparison.
+      \item \emph{Plot:} box plot or grouped bars.
+    \end{itemize}
+  \end{itemize}
+\end{itemize}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/esp_potential_revenue_contour.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/nsp_potential_revenue_contour.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/potential_offload_ratio_contour.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/algorithm2_exploitability_vs_users.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/stage2_wall_time_vs_users.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/stage2_solver_comparison_vs_users.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figs/algorithm2_social_cost_gap_vs_users.png}
+    \caption{Enter Caption}
+    \label{fig:placeholder}
+\end{figure}
+
 
 
 % {\appendix[Proof of the Zonklar Equations]
