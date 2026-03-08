@@ -173,6 +173,10 @@ def _drl_trajectory(users, system, stack_cfg, base_cfg):
     return traj
 
 
+def _inside_domain(p: tuple[float, float], pE_values: np.ndarray, pN_values: np.ndarray) -> bool:
+    return (float(pE_values.min()) <= p[0] <= float(pE_values.max())) and (float(pN_values.min()) <= p[1] <= float(pN_values.max()))
+
+
 def plot_boundary_with_trajectory(
     pE_values: np.ndarray,
     pN_values: np.ndarray,
@@ -184,9 +188,11 @@ def plot_boundary_with_trajectory(
     upper_boundary_mask: np.ndarray,
     out_path: Path,
     n_users: int,
-) -> None:
+) -> dict[str, object]:
     """Plot deviation-gap contour + theorem boundary + trajectories / baseline endpoints."""
     pE_grid, pN_grid = np.meshgrid(pE_values, pN_values)
+    x_min, x_max = float(pE_values.min()), float(pE_values.max())
+    y_min, y_max = float(pN_values.min()), float(pN_values.max())
 
     fig, ax = plt.subplots(figsize=(9, 7), dpi=150)
 
@@ -204,7 +210,7 @@ def plot_boundary_with_trajectory(
     traj_pN = [t["pN"] for t in trajectory]
     ax.plot(traj_pE, traj_pN, 'c-', linewidth=2.5, marker='o', markersize=5,
             markerfacecolor='cyan', markeredgecolor='black', markeredgewidth=0.8,
-            label='Algorithm 5 trajectory', zorder=10)
+            label='Algorithm 5 trajectory', zorder=10, clip_on=True)
     ax.plot(traj_pE[0], traj_pN[0], 'go', markersize=10, markeredgecolor='darkgreen', markeredgewidth=1.5,
             label='Start', zorder=11)
     ax.plot(traj_pE[-1], traj_pN[-1], 'r*', markersize=14, markeredgecolor='darkred', markeredgewidth=1.0,
@@ -212,32 +218,56 @@ def plot_boundary_with_trajectory(
 
     style = {"PBRD": "s", "BO": "^", "DRL": "D"}
     colors = {"PBRD": "#8e24aa", "BO": "#f9a825", "DRL": "#2e7d32"}
+    out_of_domain: list[str] = []
+
     for name, traj in baseline_trajectories.items():
         if not traj:
             continue
         xs = [x for x, _ in traj]
         ys = [y for _, y in traj]
         ax.plot(xs, ys, linestyle='--', linewidth=1.2, alpha=0.9, color=colors.get(name, 'gray'),
-                label=f"{name} trajectory", zorder=8)
+                label=f"{name} trajectory", zorder=8, clip_on=True)
     for name, (pE, pN) in baseline_points.items():
-        ax.scatter([pE], [pN], s=70, marker=style.get(name, "x"), c=colors.get(name, "black"),
-                   edgecolors="black", linewidths=0.7, label=f"{name} final", zorder=12)
+        if _inside_domain((pE, pN), pE_values, pN_values):
+            ax.scatter([pE], [pN], s=70, marker=style.get(name, "x"), c=colors.get(name, "black"),
+                       edgecolors="black", linewidths=0.7, label=f"{name} final", zorder=12, clip_on=True)
+        else:
+            out_of_domain.append(f"{name}=({pE:.3g},{pN:.3g})")
 
-    ax.scatter([true_se[0]], [true_se[1]], s=140, marker='X', c='#ff1744', edgecolors='black', linewidths=1.0,
-               label='True SE (grid-search oracle)', zorder=13)
+    if _inside_domain(true_se, pE_values, pN_values):
+        ax.scatter([true_se[0]], [true_se[1]], s=140, marker='X', c='#ff1744', edgecolors='black', linewidths=1.0,
+                   label='True SE (grid-search oracle)', zorder=13, clip_on=True)
+    else:
+        out_of_domain.append(f"TrueSE=({true_se[0]:.3g},{true_se[1]:.3g})")
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
 
     cbar = fig.colorbar(contourf, ax=ax)
     cbar.set_label("Combined Deviation Gap (ε)")
+
+    domain_note = f"Heatmap domain: pE∈[{x_min:.3g},{x_max:.3g}], pN∈[{y_min:.3g},{y_max:.3g}]"
+    if out_of_domain:
+        domain_note += " | out-of-domain overlays hidden: " + "; ".join(out_of_domain)
 
     ax.set_title(f"Stage I Figure 6: Boundary/Gap/Trajectory Overlay\n(n={n_users} users)")
     ax.set_xlabel("pE (ESP price)")
     ax.set_ylabel("pN (NSP price)")
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.3)
+    fig.text(0.01, 0.01, domain_note, fontsize=8, color="#263238")
 
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
+
+    return {
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+        "out_of_domain_overlays": out_of_domain,
+    }
 
 
 def _write_trajectory_csv(trajectory: list[dict], result, out_path: Path) -> None:
@@ -337,7 +367,7 @@ def main() -> None:
             data = _build_data(users)
             upper_boundary_mask = _extract_upper_boundary_mask(data, result.offloading_set, pE_values, pN_values, cfg.system)
 
-            plot_boundary_with_trajectory(
+            domain_diag = plot_boundary_with_trajectory(
                 pE_values,
                 pN_values,
                 combined_gap,
@@ -391,6 +421,7 @@ def main() -> None:
                 "n_users": args.n_users,
                 "boundary_points": int(boundary_pts.shape[0]),
                 "methods": summary_rows,
+                "heatmap_domain": domain_diag,
             }, indent=2), encoding="utf-8")
 
             print(f"  Created visualization + heatmap surface + boundary summaries for trial {trial}")

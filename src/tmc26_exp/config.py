@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -60,6 +60,9 @@ class StackelbergConfig:
     rne_max_expand_steps: int
     search_max_iters: int
     search_improvement_tol: float
+    stage1_neighborhood_mode: Literal["two_stage", "full_search"]
+    stage1_neighborhood_max_candidates: int
+    gain_estimator_variant: Literal["boundary", "refined_price"]
 
 
 @dataclass(frozen=True)
@@ -185,6 +188,9 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         rne_max_expand_steps=int(raw.get("rne_max_expand_steps", 50)),
         search_max_iters=int(raw.get("search_max_iters", 20)),
         search_improvement_tol=float(raw.get("search_improvement_tol", 1e-9)),
+        stage1_neighborhood_mode=str(raw.get("stage1_neighborhood_mode", "two_stage")).strip().lower(),
+        stage1_neighborhood_max_candidates=int(raw.get("stage1_neighborhood_max_candidates", 256)),
+        gain_estimator_variant=str(raw.get("gain_estimator_variant", "boundary")).strip().lower(),
     )
     if cfg.initial_pE <= 0 or cfg.initial_pN <= 0:
         raise ValueError("Initial prices must be positive.")
@@ -198,6 +204,12 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         raise ValueError("RNE sampling settings must be positive integers.")
     if cfg.search_improvement_tol < 0:
         raise ValueError("search_improvement_tol must be non-negative.")
+    if cfg.stage1_neighborhood_mode not in {"two_stage", "full_search"}:
+        raise ValueError("stage1_neighborhood_mode must be 'two_stage' or 'full_search'.")
+    if cfg.stage1_neighborhood_max_candidates <= 0:
+        raise ValueError("stage1_neighborhood_max_candidates must be positive.")
+    if cfg.gain_estimator_variant not in {"boundary", "refined_price"}:
+        raise ValueError("gain_estimator_variant must be 'boundary' or 'refined_price'.")
     return cfg
 
 

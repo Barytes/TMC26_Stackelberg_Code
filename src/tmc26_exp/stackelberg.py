@@ -460,6 +460,27 @@ def algorithm_2_heuristic_user_selection(
     )
 
 
+def _candidate_revenue_estimate(
+    data: _ProblemData,
+    users: UserBatch,
+    candidate_set: tuple[int, ...],
+    pE: float,
+    pN: float,
+    provider: Provider,
+    system: SystemConfig,
+    estimator_variant: str,
+) -> float | None:
+    if estimator_variant == "boundary":
+        return _boundary_revenue_for_provider(data, candidate_set, pE, pN, provider, system)
+
+    if estimator_variant == "refined_price":
+        # Calibration variant: refine prices on candidate set, then evaluate revenue there.
+        cand_price = _refine_price_for_fixed_set(users, candidate_set, (pE, pN), system)
+        return _provider_revenue(data, candidate_set, cand_price[0], cand_price[1], provider, system)
+
+    raise ValueError(f"Unknown estimator_variant={estimator_variant}")
+
+
 def algorithm_3_gain_approximation(
     users: UserBatch,
     current_set: Iterable[int],
@@ -467,6 +488,7 @@ def algorithm_3_gain_approximation(
     pN: float,
     provider: Provider,
     system: SystemConfig,
+    estimator_variant: str = "boundary",
 ) -> GainApproxResult:
     data = _build_data(users)
     X = _sorted_tuple(current_set)
@@ -476,7 +498,16 @@ def algorithm_3_gain_approximation(
     best_gain = 0.0
     best_set = X
     for Y in family:
-        candidate_revenue = _boundary_revenue_for_provider(data, Y, pE, pN, provider, system)
+        candidate_revenue = _candidate_revenue_estimate(
+            data,
+            users,
+            Y,
+            pE,
+            pN,
+            provider,
+            system,
+            estimator_variant=estimator_variant,
+        )
         if candidate_revenue is None:
             continue
         gain = candidate_revenue - current_revenue
@@ -662,8 +693,8 @@ def algorithm_4_optimal_rne_sampling(
     p_in = (max(initial_price[0], system.cE), max(initial_price[1], system.cN))
 
     if not X:
-        gain_E = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "E", system)
-        gain_N = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "N", system)
+        gain_E = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "E", system, estimator_variant=cfg.gain_estimator_variant)
+        gain_N = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "N", system, estimator_variant=cfg.gain_estimator_variant)
         eps = max(gain_E.gain, gain_N.gain)
         return RNEResult(offloading_set=X, price=p_in, epsilon=eps, gain_E=gain_E, gain_N=gain_N)
 
@@ -684,8 +715,8 @@ def algorithm_4_optimal_rne_sampling(
 
         t_min = min(t_values)
         p_eval = (p_in[0] + t_min * direction[0], p_in[1] + t_min * direction[1])
-        gain_E = algorithm_3_gain_approximation(users, X, p_eval[0], p_eval[1], "E", system)
-        gain_N = algorithm_3_gain_approximation(users, X, p_eval[0], p_eval[1], "N", system)
+        gain_E = algorithm_3_gain_approximation(users, X, p_eval[0], p_eval[1], "E", system, estimator_variant=cfg.gain_estimator_variant)
+        gain_N = algorithm_3_gain_approximation(users, X, p_eval[0], p_eval[1], "N", system, estimator_variant=cfg.gain_estimator_variant)
         eps = max(gain_E.gain, gain_N.gain)
 
         if eps < best_eps:
@@ -695,8 +726,8 @@ def algorithm_4_optimal_rne_sampling(
             best_gain_N = gain_N
 
     if best_gain_E is None or best_gain_N is None:
-        best_gain_E = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "E", system)
-        best_gain_N = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "N", system)
+        best_gain_E = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "E", system, estimator_variant=cfg.gain_estimator_variant)
+        best_gain_N = algorithm_3_gain_approximation(users, X, p_in[0], p_in[1], "N", system, estimator_variant=cfg.gain_estimator_variant)
         best_eps = max(best_gain_E.gain, best_gain_N.gain)
 
     return RNEResult(
@@ -855,8 +886,24 @@ def algorithm_5_stackelberg_guided_search(
         outer_iterations = t + 1
         current_price = _refine_price_for_fixed_set(users, current_set, current_price, system)
 
-        gain_E = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "E", system)
-        gain_N = algorithm_3_gain_approximation(users, current_set, current_price[0], current_price[1], "N", system)
+        gain_E = algorithm_3_gain_approximation(
+            users,
+            current_set,
+            current_price[0],
+            current_price[1],
+            "E",
+            system,
+            estimator_variant=cfg.gain_estimator_variant,
+        )
+        gain_N = algorithm_3_gain_approximation(
+            users,
+            current_set,
+            current_price[0],
+            current_price[1],
+            "N",
+            system,
+            estimator_variant=cfg.gain_estimator_variant,
+        )
         current_eps = max(gain_E.gain, gain_N.gain)
         dist_to_se = math.sqrt((current_price[0] - se_pE) ** 2 + (current_price[1] - se_pN) ** 2)
         eps_delta = float("nan") if prev_eps is None else (prev_eps - current_eps)
@@ -879,30 +926,41 @@ def algorithm_5_stackelberg_guided_search(
 
         best_candidate: tuple[int, ...] | None = None
         best_eps = current_eps
-        for candidate_set in exact_targets:
+
+        data = _build_data(users)
+        neighborhood = _candidate_family(data, current_set, current_price[0], current_price[1], system)
+
+        if cfg.stage1_neighborhood_mode == "full_search":
+            eval_pool = [c for c in neighborhood if c != current_set]
+        else:
+            tail_pool = [c for c in neighborhood if c != current_set and c not in exact_targets]
+            eval_pool = [*exact_targets, *tail_pool]
+
+        for candidate_set in eval_pool[: cfg.stage1_neighborhood_max_candidates]:
             evaluated_candidates += 1
             candidate_price = _refine_price_for_fixed_set(users, candidate_set, current_price, system)
-            cand_gE = algorithm_3_gain_approximation(users, candidate_set, candidate_price[0], candidate_price[1], "E", system)
-            cand_gN = algorithm_3_gain_approximation(users, candidate_set, candidate_price[0], candidate_price[1], "N", system)
+            cand_gE = algorithm_3_gain_approximation(
+                users,
+                candidate_set,
+                candidate_price[0],
+                candidate_price[1],
+                "E",
+                system,
+                estimator_variant=cfg.gain_estimator_variant,
+            )
+            cand_gN = algorithm_3_gain_approximation(
+                users,
+                candidate_set,
+                candidate_price[0],
+                candidate_price[1],
+                "N",
+                system,
+                estimator_variant=cfg.gain_estimator_variant,
+            )
             cand_eps = max(cand_gE.gain, cand_gN.gain)
             if cand_eps + cfg.search_improvement_tol < best_eps:
                 best_eps = cand_eps
                 best_candidate = candidate_set
-
-        if best_candidate is None:
-            data = _build_data(users)
-            neighborhood = _candidate_family(data, current_set, current_price[0], current_price[1], system)
-            for candidate_set in neighborhood:
-                if candidate_set == current_set or candidate_set in exact_targets:
-                    continue
-                evaluated_candidates += 1
-                candidate_price = _refine_price_for_fixed_set(users, candidate_set, current_price, system)
-                cand_gE = algorithm_3_gain_approximation(users, candidate_set, candidate_price[0], candidate_price[1], "E", system)
-                cand_gN = algorithm_3_gain_approximation(users, candidate_set, candidate_price[0], candidate_price[1], "N", system)
-                cand_eps = max(cand_gE.gain, cand_gN.gain)
-                if cand_eps + cfg.search_improvement_tol < best_eps:
-                    best_eps = cand_eps
-                    best_candidate = candidate_set
 
         if best_candidate is None:
             local_price, local_eps = _best_local_price_on_fixed_set(users, current_set, current_price, system)
@@ -926,8 +984,24 @@ def algorithm_5_stackelberg_guided_search(
         no_improve_rounds = 0
 
     final_set = current_set
-    final_gain_E = algorithm_3_gain_approximation(users, final_set, current_price[0], current_price[1], "E", system)
-    final_gain_N = algorithm_3_gain_approximation(users, final_set, current_price[0], current_price[1], "N", system)
+    final_gain_E = algorithm_3_gain_approximation(
+        users,
+        final_set,
+        current_price[0],
+        current_price[1],
+        "E",
+        system,
+        estimator_variant=cfg.gain_estimator_variant,
+    )
+    final_gain_N = algorithm_3_gain_approximation(
+        users,
+        final_set,
+        current_price[0],
+        current_price[1],
+        "N",
+        system,
+        estimator_variant=cfg.gain_estimator_variant,
+    )
     final_eps = max(final_gain_E.gain, final_gain_N.gain)
 
     final_inner = _solve_fixed_set_inner_exact(users, final_set, current_price[0], current_price[1], system)
