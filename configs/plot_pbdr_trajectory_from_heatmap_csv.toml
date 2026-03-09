@@ -1,0 +1,24 @@
+[script]
+name = "plot_pbdr_trajectory_from_heatmap_csv.py"
+entry = "scripts/plot_pbdr_trajectory_from_heatmap_csv.py"
+
+[run]
+command = "uv run python scripts/plot_pbdr_trajectory_from_heatmap_csv.py --csv outputs/run_stage1_price_heatmaps_20260309_113102/price_grid_metrics.csv --mode alternating --max-iters 200"
+
+[inputs]
+csv = "outputs/run_stage1_price_heatmaps_20260309_113102/price_grid_metrics.csv"
+mode = "alternating"
+max_iters = 200
+start_pE = 0.1
+start_pN = 0.1
+eps_tol = 1e-12
+low_eps_quantile = 0.1
+
+[outputs]
+dir = "outputs/pbdr_traj_alternating_20260309_144836"
+files = [
+  "eps_heatmap_pbdr_trajectory.png",
+  "pbdr_trajectory.csv",
+  "summary.txt",
+]
+

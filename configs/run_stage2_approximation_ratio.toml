@@ -1,8 +1,8 @@
-run_name = "stage1_fast_diag"
+﻿run_name = "run_stage2_approximation_ratio"
 output_dir = "outputs"
-n_users = 20
-n_trials = 1
-seed = 2026
+n_users = 50
+n_trials = 3
+seed = 20260308
 
 [system]
 F = 100.0
@@ -14,20 +14,17 @@ cN = 0.01
 enabled = true
 initial_pE = 0.5
 initial_pN = 0.5
-inner_eta_F0 = 0.5
-inner_eta_B0 = 0.5
-inner_eta_mu0 = 0.5
-inner_max_iters = 300
-inner_tol = 1.0e-4
+inner_eta_F0 = 0.2
+inner_eta_B0 = 0.2
+inner_eta_mu0 = 0.2
+inner_max_iters = 3000
+inner_tol = 1.0e-6
 greedy_max_iters = 128
-rne_directions = 10
+rne_directions = 12
 rne_root_tol = 1.0e-5
 rne_max_expand_steps = 30
 search_max_iters = 12
 search_improvement_tol = 1.0e-8
-stage1_neighborhood_mode = "full_search"
-stage1_neighborhood_max_candidates = 256
-gain_estimator_variant = "topk_real_reval"
 
 [baselines]
 enabled = false
@@ -36,17 +33,17 @@ exact_max_users = 16
 stage2_solver_for_pricing = "DG"
 max_price_E = 6.0
 max_price_N = 6.0
-gso_grid_points = 21
+gso_grid_points = 15
 pbdr_grid_points = 21
-pbdr_max_iters = 10
+pbdr_max_iters = 12
 pbdr_tol = 1.0e-4
-bo_init_points = 8
+bo_init_points = 6
 bo_iters = 12
-bo_candidate_pool = 48
+bo_candidate_pool = 64
 bo_kernel_bandwidth = 0.25
-bo_ucb_beta = 2.0
-drl_price_levels = 11
-drl_episodes = 40
+bo_ucb_beta = 2.5
+drl_price_levels = 9
+drl_episodes = 24
 drl_steps_per_episode = 20
 drl_alpha = 0.1
 drl_gamma = 0.95
@@ -54,7 +51,7 @@ drl_epsilon = 0.2
 market_max_iters = 40
 market_step_size = 0.2
 single_sp_max_iters = 100
-random_offloading_trials = 32
+random_offloading_trials = 24
 random_offloading_prob = 0.5
 ubrd_max_iters = 100
 vi_max_iters = 100
@@ -67,56 +64,71 @@ penalty_rho_scale = 4.0
 penalty_tol = 1e-4
 
 [detailed_experiment]
-emit_plan = false
+emit_plan = true
 output_subdir = "detailed_plan"
-suggested_trials = 10
-heavy_trials = 20
+suggested_trials = 20
+heavy_trials = 40
 
-metrics = ["potential_offload_ratio"]
+metrics = [
+  "potential_offload_ratio",
+  "mean_cost_gap_local_minus_offload",
+  "esp_potential_revenue",
+  "nsp_potential_revenue",
+  "mean_unconstrained_offload_cost",
+]
 
 [price_grid.pE]
 min = 0.05
-max = 7.0
-points = 48
+max = 5.0
+points = 50
 
 [price_grid.pN]
 min = 0.05
-max = 7.0
-points = 48
+max = 5.0
+points = 50
 
 [user_distributions.w]
 kind = "uniform"
 low = 0.5
 high = 2.5
+
 [user_distributions.d]
 kind = "uniform"
 low = 1.0
 high = 10.0
+
 [user_distributions.fl]
 kind = "uniform"
 low = 0.5
 high = 1.2
+
 [user_distributions.alpha]
 kind = "uniform"
 low = 10.0
 high = 15.0
+
 [user_distributions.beta]
 kind = "uniform"
 low = 0.1
 high = 0.5
+
 [user_distributions.rho]
 kind = "uniform"
 low = 0.5
 high = 2.0
+
 [user_distributions.varpi]
 kind = "uniform"
 low = 0.8
 high = 1.2
+
 [user_distributions.kappa]
 kind = "uniform"
 low = 0.01
 high = 0.05
+
 [user_distributions.sigma]
 kind = "uniform"
 low = 0.5
 high = 3.0
+

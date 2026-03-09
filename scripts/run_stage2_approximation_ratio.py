@@ -208,13 +208,56 @@ def _write_points_csv(out_path: Path, rows: list[dict[str, float | int | str | b
             writer.writerow(row)
 
 
+def _read_points_csv(csv_path: Path) -> list[dict[str, float | int | str | bool]]:
+    rows: list[dict[str, float | int | str | bool]] = []
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append(
+                {
+                    "n_users": int(r["n_users"]),
+                    "trial": int(r["trial"]),
+                    "V0": float(r["V0"]) if r["V0"] else float("nan"),
+                    "V_DG": float(r["V_DG"]) if r["V_DG"] else float("nan"),
+                    "V_Xstar": float(r["V_Xstar"]) if r["V_Xstar"] else float("nan"),
+                    "Xstar_size": int(r["Xstar_size"]),
+                    "delta_hat_star": float(r["delta_hat_star"]) if r["delta_hat_star"] else float("nan"),
+                    "bound": float(r["bound"]) if r["bound"] else float("nan"),
+                    "ratio": float(r["ratio"]) if r["ratio"] else float("nan"),
+                    "slack": float(r["slack"]) if r["slack"] else float("nan"),
+                    "violated": str(r["violated"]).strip().lower() == "true",
+                    "valid": str(r["valid"]).strip().lower() == "true",
+                    "centralized_success": str(r["centralized_success"]).strip().lower() == "true",
+                    "centralized_solver": str(r["centralized_solver"]),
+                }
+            )
+    return rows
+
+
+def _default_plot_filename(transform: str) -> str:
+    if transform == "linear":
+        return "approx_ratio_scatter.png"
+    if transform == "logy":
+        return "approx_ratio_scatter_logy.png"
+    if transform == "loglog":
+        return "approx_ratio_scatter_loglog.png"
+    if transform == "normalized":
+        return "approx_ratio_scatter_normalized.png"
+    if transform == "margin":
+        return "approx_ratio_scatter_margin.png"
+    raise ValueError(f"Unknown transform={transform}")
+
+
 def _violation_rate_str(num_violations: int, num_valid: int) -> str:
     if num_valid <= 0:
         return "nan"
     return f"{(100.0 * num_violations / num_valid):.4f}%"
 
 
-def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Path) -> None:
+def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Path, transform: str = "linear") -> dict[str, int]:
+    if transform not in {"linear", "logy", "loglog", "normalized", "margin"}:
+        raise ValueError(f"Unknown transform={transform}")
+
     valid_rows = [
         r
         for r in rows
@@ -222,6 +265,15 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         and np.isfinite(float(r["bound"]))
         and np.isfinite(float(r["ratio"]))
     ]
+    dropped_for_log = 0
+    if transform in {"logy", "loglog", "normalized", "margin"}:
+        filtered: list[dict[str, float | int | str | bool]] = []
+        for r in valid_rows:
+            if float(r["bound"]) > 0.0 and float(r["ratio"]) > 0.0:
+                filtered.append(r)
+            else:
+                dropped_for_log += 1
+        valid_rows = filtered
 
     fig, ax = plt.subplots(figsize=(8.4, 6.2), dpi=150)
     cmap = plt.get_cmap("tab10")
@@ -231,37 +283,124 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         n_rows = [r for r in valid_rows if int(r["n_users"]) == n]
         if not n_rows:
             continue
-        bounds = np.asarray([float(r["bound"]) for r in n_rows], dtype=float)
-        ratios = np.asarray([float(r["ratio"]) for r in n_rows], dtype=float)
+        bounds_raw = np.asarray([float(r["bound"]) for r in n_rows], dtype=float)
+        ratios_raw = np.asarray([float(r["ratio"]) for r in n_rows], dtype=float)
+        if transform == "linear":
+            x_plot = bounds_raw
+            y_plot = ratios_raw
+        elif transform == "logy":
+            x_plot = bounds_raw
+            y_plot = np.log(ratios_raw)
+        elif transform == "loglog":
+            x_plot = np.log(bounds_raw)
+            y_plot = np.log(ratios_raw)
+        elif transform == "normalized":
+            x_plot = bounds_raw
+            y_plot = ratios_raw / bounds_raw
+        else:  # margin
+            x_plot = bounds_raw
+            y_plot = np.log(bounds_raw / ratios_raw)
         color = cmap(idx % 10)
-        ax.scatter(bounds, ratios, s=34, alpha=0.9, color=color, label=f"n={n}")
+        ax.scatter(x_plot, y_plot, s=34, alpha=0.9, color=color, label=f"n={n}")
 
     violation_rows = [r for r in valid_rows if bool(r["violated"])]
     if violation_rows:
-        x_v = np.asarray([float(r["bound"]) for r in violation_rows], dtype=float)
-        y_v = np.asarray([float(r["ratio"]) for r in violation_rows], dtype=float)
+        x_v_raw = np.asarray([float(r["bound"]) for r in violation_rows], dtype=float)
+        y_v_raw = np.asarray([float(r["ratio"]) for r in violation_rows], dtype=float)
+        if transform == "linear":
+            x_v = x_v_raw
+            y_v = y_v_raw
+        elif transform == "logy":
+            x_v = x_v_raw
+            y_v = np.log(y_v_raw)
+        elif transform == "loglog":
+            x_v = np.log(x_v_raw)
+            y_v = np.log(y_v_raw)
+        elif transform == "normalized":
+            x_v = x_v_raw
+            y_v = y_v_raw / x_v_raw
+        else:  # margin
+            x_v = x_v_raw
+            y_v = np.log(x_v_raw / y_v_raw)
         ax.scatter(x_v, y_v, s=58, marker="x", color="red", linewidths=1.1, label="Violation (ratio > bound)")
 
     if valid_rows:
-        x_all = np.asarray([float(r["bound"]) for r in valid_rows], dtype=float)
-        y_all = np.asarray([float(r["ratio"]) for r in valid_rows], dtype=float)
-        low = float(min(np.min(x_all), np.min(y_all)))
-        high = float(max(np.max(x_all), np.max(y_all)))
-        pad = 0.03 * max(high - low, 1e-6)
-        low -= pad
-        high += pad
-        ax.plot([low, high], [low, high], linestyle="--", color="black", linewidth=1.3, label="y = x")
-        ax.set_xlim(low, high)
-        ax.set_ylim(low, high)
+        x_all_raw = np.asarray([float(r["bound"]) for r in valid_rows], dtype=float)
+        y_all_raw = np.asarray([float(r["ratio"]) for r in valid_rows], dtype=float)
+        if transform == "linear":
+            x_all = x_all_raw
+            y_all = y_all_raw
+            line_y = lambda x: x
+            line_label = "y = x"
+        elif transform == "logy":
+            x_all = x_all_raw
+            y_all = np.log(y_all_raw)
+            line_y = lambda x: np.log(np.maximum(x, 1e-12))
+            line_label = "y = log(x)"
+        elif transform == "loglog":
+            x_all = np.log(x_all_raw)
+            y_all = np.log(y_all_raw)
+            line_y = lambda x: x
+            line_label = "y = x"
+        elif transform == "normalized":
+            x_all = x_all_raw
+            y_all = y_all_raw / x_all_raw
+            line_y = lambda x: np.ones_like(x)
+            line_label = "y = 1"
+        else:  # margin
+            x_all = x_all_raw
+            y_all = np.log(x_all_raw / y_all_raw)
+            line_y = lambda x: np.zeros_like(x)
+            line_label = "y = 0"
 
-    ax.set_xlabel("Theoretical Upper Bound (RHS)")
-    ax.set_ylabel("Empirical Ratio V(X_DG)/V(X*)")
-    ax.set_title("Empirical Approximation Ratio vs Theoretical Bound (Stage II)")
+        x_low = float(np.min(x_all))
+        x_high = float(np.max(x_all))
+        y_low = float(np.min(y_all))
+        y_high = float(np.max(y_all))
+        x_pad = 0.03 * max(x_high - x_low, 1e-6)
+        y_pad = 0.08 * max(y_high - y_low, 1e-6)
+        x_low -= x_pad
+        x_high += x_pad
+        y_low -= y_pad
+        y_high += y_pad
+        if transform == "normalized":
+            y_low = min(y_low, 1.0)
+            y_high = max(y_high, 1.0)
+        if transform == "margin":
+            y_low = min(y_low, 0.0)
+            y_high = max(y_high, 0.0)
+        xs = np.linspace(x_low, x_high, 300)
+        ys = line_y(xs)
+        ax.plot(xs, ys, linestyle="--", color="black", linewidth=1.3, label=line_label)
+        ax.set_xlim(x_low, x_high)
+        ax.set_ylim(y_low, y_high)
+
+    if transform == "linear":
+        ax.set_xlabel("Theoretical Upper Bound (RHS)")
+        ax.set_ylabel("Empirical Ratio V(X_DG)/V(X*)")
+        ax.set_title("Empirical Approximation Ratio vs Theoretical Bound (Stage II)")
+    elif transform == "logy":
+        ax.set_xlabel("Theoretical Upper Bound (RHS)")
+        ax.set_ylabel("log Empirical Ratio log(V(X_DG)/V(X*))")
+        ax.set_title("Empirical Approximation Ratio vs Theoretical Bound (log-y)")
+    elif transform == "loglog":
+        ax.set_xlabel("log Theoretical Upper Bound log(RHS)")
+        ax.set_ylabel("log Empirical Ratio log(V(X_DG)/V(X*))")
+        ax.set_title("Empirical Approximation Ratio vs Theoretical Bound (log-log)")
+    else:
+        ax.set_xlabel("Theoretical Upper Bound (RHS)")
+        if transform == "normalized":
+            ax.set_ylabel("Normalized Ratio V(X_DG)/(V(X*)·RHS)")
+            ax.set_title("Empirical/Theoretical Ratio Normalization (Stage II)")
+        else:
+            ax.set_ylabel("Margin log(RHS / Empirical Ratio)")
+            ax.set_title("Bound Margin log(bound/ratio) (Stage II)")
     ax.grid(alpha=0.25)
     ax.legend(loc="upper right", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
+    return {"valid_rows_used": len(valid_rows), "dropped_for_log": dropped_for_log}
 
 
 def main() -> None:
@@ -299,10 +438,45 @@ def main() -> None:
         default=None,
         help="Output directory (default: outputs/run_stage2_approximation_ratio_<timestamp>).",
     )
+    parser.add_argument(
+        "--plot-transform",
+        type=str,
+        default="linear",
+        choices=["linear", "logy", "loglog", "normalized", "margin"],
+        help="Scatter plot transform mode.",
+    )
+    parser.add_argument(
+        "--plot-output-name",
+        type=str,
+        default=None,
+        help="Optional output filename for scatter plot.",
+    )
+    parser.add_argument(
+        "--replot-csv",
+        type=str,
+        default=None,
+        help="If provided, skip optimization and replot from an existing approx_ratio_points.csv.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     seed = cfg.seed if args.seed is None else int(args.seed)
+    plot_name = args.plot_output_name if args.plot_output_name is not None else _default_plot_filename(args.plot_transform)
+
+    if args.replot_csv is not None:
+        csv_path = Path(args.replot_csv)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"CSV not found: {csv_path}")
+        out_dir = Path(args.out_dir) if args.out_dir is not None else csv_path.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rows = _read_points_csv(csv_path)
+        plot_info = _plot_scatter(rows, out_dir / plot_name, transform=args.plot_transform)
+        print(
+            f"Done replot. Files written to: {out_dir}; "
+            f"valid_rows_used={plot_info['valid_rows_used']}; dropped_for_log={plot_info['dropped_for_log']}"
+        )
+        return
+
     out_dir = Path(args.out_dir) if args.out_dir is not None else _default_output_dir(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -364,7 +538,7 @@ def main() -> None:
     summary_path = out_dir / "approx_ratio_summary.txt"
 
     _write_points_csv(csv_path, rows)
-    _plot_scatter(rows, fig_path)
+    plot_info = _plot_scatter(rows, fig_path, transform=args.plot_transform)
 
     total = len(rows)
     success_count = sum(1 for r in rows if bool(r["centralized_success"]))
@@ -379,11 +553,15 @@ def main() -> None:
         f"pN = {pN:.10g}",
         f"inner_solver = {args.inner_solver}",
         f"centralized_solver = {args.centralized_solver}",
+        f"plot_transform = {args.plot_transform}",
+        f"plot_output_name = {plot_name}",
         f"n_users_list = {','.join(str(n) for n in n_list)}",
         f"trials_per_n = {args.trials}",
         f"total_instances = {total}",
         f"centralized_success_instances = {success_count}",
         f"valid_instances = {valid_count}",
+        f"plot_valid_instances = {plot_info['valid_rows_used']}",
+        f"plot_dropped_for_log = {plot_info['dropped_for_log']}",
         f"violations = {violation_count}",
         f"overall_violation_rate = {_violation_rate_str(violation_count, valid_count)}",
     ]
