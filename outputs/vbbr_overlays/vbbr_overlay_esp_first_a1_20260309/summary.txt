@@ -1,0 +1,28 @@
+config = configs/default.toml
+seed = 2026
+heatmap_source = outputs\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+stage1_solver_variant = vbbr_brd
+vbbr_local_R = 4
+vbbr_local_S = 4
+vbbr_local_budget = 6
+vbbr_top_m = 12
+vbbr_oracle_max_rounds = 10
+vbbr_no_improve_patience = 2
+vbbr_damping_alpha = 1.0
+vbbr_outer_update_mode = esp_first
+stage2_method_for_heatmap = DG
+pE_range = [0.0, 15.0], points = 150
+pN_range = [0.0, 15.0], points = 150
+trajectory_points = 10
+trajectory_points_out_of_heatmap = 0
+start_pE = 0.5
+start_pN = 0.5
+final_pE = 1.785615231
+final_pN = 3.517101834
+final_eps_on_nearest_grid = 0
+global_min_eps = 0
+global_argmin_pE = 3.825503356
+global_argmin_pN = 2.214765101
+stackelberg_stopping_reason = verified_gain_tolerance
+stackelberg_outer_iterations = 10
+stackelberg_stage2_oracle_calls = 539

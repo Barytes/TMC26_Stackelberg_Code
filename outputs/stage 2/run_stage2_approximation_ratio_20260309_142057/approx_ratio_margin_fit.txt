@@ -1,0 +1,11 @@
+source_csv = outputs\stage 2\run_stage2_approximation_ratio_20260309_142057\approx_ratio_points.csv
+samples_used = 79
+model_linear = y = 0.3813664697*x + -0.1882612741
+r2_linear = 0.9580015496
+model_quadratic = y = -0.06328984376*x^2 + 0.7278501779*x + -0.6134662125
+r2_quadratic = 0.9880856113
+model_log = y = 0.9580635893*ln(x) + -0.06556535008
+r2_log = 0.9896279914
+best_model = log
+best_expression = y = 0.958064 * ln(x) + -0.065565
+best_r2 = 0.9896279914

@@ -25,6 +25,19 @@ rne_root_tol = 1.0e-5
 rne_max_expand_steps = 50
 search_max_iters = 20
 search_improvement_tol = 1.0e-9
+stage1_solver_variant = "vbbr_brd"
+vbbr_local_R = 2
+vbbr_local_S = 2
+vbbr_local_budget = 3
+vbbr_top_m = 6
+vbbr_oracle_max_rounds = 6
+vbbr_oracle_improve_tol = 1.0e-8
+vbbr_no_improve_patience = 1
+vbbr_outer_gain_tol = 1.0e-7
+vbbr_damping_alpha = 1.0
+vbbr_outer_update_mode = "esp_first"
+vbbr_cycle_window = 8
+vbbr_disable_exact_inner = false
 
 [baselines]
 enabled = false

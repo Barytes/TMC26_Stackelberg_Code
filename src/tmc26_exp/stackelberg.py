@@ -45,6 +45,20 @@ class GainApproxResult:
 
 
 @dataclass(frozen=True)
+class VBBROracleResult:
+    provider: Provider
+    best_price: float
+    best_trigger_set: tuple[int, ...]
+    best_set: tuple[int, ...]
+    current_revenue: float
+    best_revenue: float
+    gain: float
+    stage2_calls: int
+    evaluated_candidates: int
+    evaluated_boundary_points: int
+
+
+@dataclass(frozen=True)
 class RNEResult:
     offloading_set: tuple[int, ...]
     price: tuple[float, float]
@@ -158,6 +172,23 @@ def _provider_revenue(
     if provider == "E":
         return (pE - system.cE) * sum_f
     return (pN - system.cN) * sum_b
+
+
+def _provider_revenue_from_stage2_result(
+    stage2_result: GreedySelectionResult,
+    pE: float,
+    pN: float,
+    provider: Provider,
+    system: SystemConfig,
+) -> float:
+    if not stage2_result.offloading_set:
+        return 0.0
+    idx = np.asarray(stage2_result.offloading_set, dtype=int)
+    if provider == "E":
+        demand = float(np.sum(stage2_result.inner_result.f[idx]))
+        return (pE - system.cE) * demand
+    demand = float(np.sum(stage2_result.inner_result.b[idx]))
+    return (pN - system.cN) * demand
 
 
 def _offload_cost_for_user(
@@ -310,6 +341,166 @@ def _candidate_family(
     return family
 
 
+def _vbbr_local_candidate_family(
+    data: _ProblemData,
+    anchor_set: tuple[int, ...],
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+) -> list[tuple[int, ...]]:
+    anchor = list(anchor_set)
+    anchor_lookup = set(anchor_set)
+    outsiders = [u for u in range(data.cl.size) if u not in anchor_lookup]
+
+    tE, tN = _tilde_prices(data, anchor_set, pE, pN, system)
+    margins = {i: _margin_for_user(data, anchor_set, i, pE, pN, system) for i in anchor}
+    scores = {j: _heuristic_score_with_t(data, j, tE, tN, system) for j in outsiders}
+
+    offloading_order = sorted(anchor, key=lambda i: margins[i])
+    outsider_order = sorted(outsiders, key=lambda j: scores[j])
+
+    max_r = min(cfg.vbbr_local_R, len(offloading_order))
+    max_s = min(cfg.vbbr_local_S, len(outsider_order))
+    budget = max(0, cfg.vbbr_local_budget)
+
+    seen: set[tuple[int, ...]] = set()
+    family: list[tuple[int, ...]] = []
+    for r in range(max_r + 1):
+        remained = offloading_order[r:]
+        for s in range(max_s + 1):
+            if r + s > budget:
+                continue
+            cand = _sorted_tuple([*remained, *outsider_order[:s]])
+            if cand in seen:
+                continue
+            seen.add(cand)
+            family.append(cand)
+    return family
+
+
+def _vbbr_verified_br_oracle(
+    users: UserBatch,
+    data: _ProblemData,
+    provider: Provider,
+    pE: float,
+    pN: float,
+    current_stage2_result: GreedySelectionResult,
+    current_revenue: float,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+    allow_exact_inner: bool,
+) -> VBBROracleResult:
+    stage2_calls = 0
+    anchor_set = current_stage2_result.offloading_set
+
+    if provider == "E":
+        current_price = float(pE)
+    else:
+        current_price = float(pN)
+
+    best_revenue = float(current_revenue)
+    best_price = current_price
+    best_trigger_set = anchor_set
+    best_set = anchor_set
+
+    visited_sets: set[tuple[int, ...]] = {anchor_set}
+    evaluated_candidates = 0
+    evaluated_boundary_points = 0
+    no_improve_rounds = 0
+
+    for _ in range(cfg.vbbr_oracle_max_rounds):
+        family = _vbbr_local_candidate_family(data, anchor_set, pE, pN, system, cfg)
+        surrogate_pool: list[tuple[float, tuple[int, ...], float]] = []
+
+        for candidate_set in family:
+            if not candidate_set:
+                continue
+            if provider == "E":
+                boundary_price = _boundary_price_for_provider(data, candidate_set, pN, "E", system)
+            else:
+                boundary_price = _boundary_price_for_provider(data, candidate_set, pE, "N", system)
+            if boundary_price is None:
+                continue
+            candidate_price = max(boundary_price, system.cE if provider == "E" else system.cN)
+            evaluated_boundary_points += 1
+
+            if provider == "E":
+                surrogate = _provider_revenue(data, candidate_set, candidate_price, pN, provider, system)
+            else:
+                surrogate = _provider_revenue(data, candidate_set, pE, candidate_price, provider, system)
+            surrogate_pool.append((float(surrogate), candidate_set, float(candidate_price)))
+
+        if not surrogate_pool:
+            break
+
+        surrogate_pool.sort(key=lambda item: item[0], reverse=True)
+        top_m = min(cfg.vbbr_top_m, len(surrogate_pool))
+        verified: list[tuple[float, float, tuple[int, ...], tuple[int, ...]]] = []
+
+        for _, trigger_set, candidate_price in surrogate_pool[:top_m]:
+            if provider == "E":
+                eval_pE = max(system.cE, float(candidate_price))
+                eval_pN = pN
+            else:
+                eval_pE = pE
+                eval_pN = max(system.cN, float(candidate_price))
+            stage2_eval = algorithm_2_heuristic_user_selection(
+                users,
+                eval_pE,
+                eval_pN,
+                system,
+                cfg,
+                allow_exact_inner=allow_exact_inner,
+            )
+            stage2_calls += 1
+            evaluated_candidates += 1
+            realized_set = stage2_eval.offloading_set
+            realized_revenue = _provider_revenue_from_stage2_result(stage2_eval, eval_pE, eval_pN, provider, system)
+            verified.append((float(realized_revenue), float(candidate_price), trigger_set, realized_set))
+
+        if not verified:
+            break
+
+        verified.sort(key=lambda item: item[0], reverse=True)
+        selected_revenue, selected_price, selected_trigger_set, selected_set = verified[0]
+
+        previous_best = best_revenue
+        improvement = float(selected_revenue - previous_best)
+        improved = improvement > cfg.vbbr_oracle_improve_tol
+        if improved:
+            best_revenue = float(selected_revenue)
+            best_price = float(selected_price)
+            best_trigger_set = selected_trigger_set
+            best_set = selected_set
+            no_improve_rounds = 0
+        else:
+            no_improve_rounds += 1
+
+        realized_seen = selected_set in visited_sets
+        if realized_seen and not improved:
+            break
+        if no_improve_rounds >= cfg.vbbr_no_improve_patience:
+            break
+
+        visited_sets.add(selected_set)
+        anchor_set = selected_set
+
+    gain = max(0.0, float(best_revenue - current_revenue))
+    return VBBROracleResult(
+        provider=provider,
+        best_price=float(best_price),
+        best_trigger_set=best_trigger_set,
+        best_set=best_set,
+        current_revenue=float(current_revenue),
+        best_revenue=float(best_revenue),
+        gain=gain,
+        stage2_calls=stage2_calls,
+        evaluated_candidates=evaluated_candidates,
+        evaluated_boundary_points=evaluated_boundary_points,
+    )
+
+
 def algorithm_1_distributed_primal_dual(
     users: UserBatch,
     offloading_set: Iterable[int],
@@ -393,6 +584,7 @@ def algorithm_2_heuristic_user_selection(
     pN: float,
     system: SystemConfig,
     cfg: StackelbergConfig,
+    allow_exact_inner: bool = True,
 ) -> GreedySelectionResult:
     data = _build_data(users)
     active_users: set[int] = set(range(users.n))
@@ -403,7 +595,7 @@ def algorithm_2_heuristic_user_selection(
     iterations = 0
 
     for t in range(cfg.greedy_max_iters):
-        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system) if allow_exact_inner else None
         if inner is None:
             inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
         ve = inner.offloading_objective
@@ -413,7 +605,7 @@ def algorithm_2_heuristic_user_selection(
             if delta_true >= 0.0:
                 offloading_set.discard(last_added)
                 active_users.discard(last_added)
-                inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+                inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system) if allow_exact_inner else None
                 if inner is None:
                     inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
                 ve = inner.offloading_objective
@@ -450,7 +642,7 @@ def algorithm_2_heuristic_user_selection(
         iterations = t + 1
         break
 
-    final_inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+    final_inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system) if allow_exact_inner else None
     if final_inner is None:
         final_inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
     final_set = final_inner.offloading_set
@@ -1117,6 +1309,202 @@ def algorithm_5_stackelberg_guided_search(
     )
 
 
+def algorithm_vbbr_brd_stage1(
+    users: UserBatch,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+) -> StackelbergResult:
+    """Verified Boundary Best Response Dynamics (VBBR-BRD)."""
+    data = _build_data(users)
+    allow_exact_inner = not cfg.vbbr_disable_exact_inner
+    alpha = float(cfg.vbbr_damping_alpha)
+    update_mode = cfg.vbbr_outer_update_mode
+    next_update_esp = (update_mode == "esp_first")
+    pE = max(cfg.initial_pE, system.cE)
+    pN = max(cfg.initial_pN, system.cN)
+    stopping_reason = "max_iters"
+
+    stage2_oracle_calls = 0
+    evaluated_candidates = 0
+    evaluated_boundary_points = 0
+    seen_keys: dict[tuple[float, float, tuple[int, ...]], int] = {}
+    cycle_hits = 0
+
+    trajectory: list[SearchStep] = []
+    prev_eps: float | None = None
+    current_set: tuple[int, ...] = tuple()
+
+    for t in range(cfg.search_max_iters):
+        stage2_cur = algorithm_2_heuristic_user_selection(
+            users,
+            pE,
+            pN,
+            system,
+            cfg,
+            allow_exact_inner=allow_exact_inner,
+        )
+        stage2_oracle_calls += 1
+        current_set = stage2_cur.offloading_set
+        current_revenue_E = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "E", system)
+        current_revenue_N = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "N", system)
+
+        br_E = _vbbr_verified_br_oracle(
+            users,
+            data,
+            "E",
+            pE,
+            pN,
+            current_stage2_result=stage2_cur,
+            current_revenue=current_revenue_E,
+            system=system,
+            cfg=cfg,
+            allow_exact_inner=allow_exact_inner,
+        )
+        br_N = _vbbr_verified_br_oracle(
+            users,
+            data,
+            "N",
+            pE,
+            pN,
+            current_stage2_result=stage2_cur,
+            current_revenue=current_revenue_N,
+            system=system,
+            cfg=cfg,
+            allow_exact_inner=allow_exact_inner,
+        )
+        stage2_oracle_calls += br_E.stage2_calls + br_N.stage2_calls
+        evaluated_candidates += br_E.evaluated_candidates + br_N.evaluated_candidates
+        evaluated_boundary_points += br_E.evaluated_boundary_points + br_N.evaluated_boundary_points
+
+        gain_E = max(0.0, float(br_E.best_revenue - current_revenue_E))
+        gain_N = max(0.0, float(br_N.best_revenue - current_revenue_N))
+        eps = max(gain_E, gain_N)
+        eps_delta = float("nan") if prev_eps is None else (prev_eps - eps)
+        prev_eps = eps
+
+        trajectory.append(
+            SearchStep(
+                iteration=t,
+                offloading_set=current_set,
+                pE=float(pE),
+                pN=float(pN),
+                epsilon=float(eps),
+                epsilon_delta=float(eps_delta),
+                esp_best_set_size=len(br_E.best_set),
+                nsp_best_set_size=len(br_N.best_set),
+                esp_gain=float(gain_E),
+                nsp_gain=float(gain_N),
+            )
+        )
+
+        key = (round(pE, 10), round(pN, 10), current_set)
+        if key in seen_keys:
+            cycle_hits += 1
+        seen_keys[key] = t
+
+        if cycle_hits >= cfg.vbbr_cycle_window:
+            stopping_reason = "cycle_safeguard"
+            break
+        if gain_E < cfg.vbbr_outer_gain_tol and gain_N < cfg.vbbr_outer_gain_tol:
+            stopping_reason = "verified_gain_tolerance"
+            break
+
+        if update_mode == "gain_max":
+            update_esp = gain_E >= gain_N
+        elif update_mode == "gain_min":
+            update_esp = gain_E <= gain_N
+        else:
+            update_esp = next_update_esp
+            next_update_esp = not next_update_esp
+
+        if update_esp:
+            target_pE = max(system.cE, float(br_E.best_price))
+            pE = max(system.cE, float((1.0 - alpha) * pE + alpha * target_pE))
+        else:
+            target_pN = max(system.cN, float(br_N.best_price))
+            pN = max(system.cN, float((1.0 - alpha) * pN + alpha * target_pN))
+
+    stage2_final = algorithm_2_heuristic_user_selection(
+        users,
+        pE,
+        pN,
+        system,
+        cfg,
+        allow_exact_inner=allow_exact_inner,
+    )
+    stage2_oracle_calls += 1
+    final_set = stage2_final.offloading_set
+    final_inner = stage2_final.inner_result
+    social_cost = float(stage2_final.social_cost)
+    esp_rev = _provider_revenue_from_stage2_result(stage2_final, pE, pN, "E", system)
+    nsp_rev = _provider_revenue_from_stage2_result(stage2_final, pE, pN, "N", system)
+
+    final_br_E = _vbbr_verified_br_oracle(
+        users,
+        data,
+        "E",
+        pE,
+        pN,
+        current_stage2_result=stage2_final,
+        current_revenue=esp_rev,
+        system=system,
+        cfg=cfg,
+        allow_exact_inner=allow_exact_inner,
+    )
+    final_br_N = _vbbr_verified_br_oracle(
+        users,
+        data,
+        "N",
+        pE,
+        pN,
+        current_stage2_result=stage2_final,
+        current_revenue=nsp_rev,
+        system=system,
+        cfg=cfg,
+        allow_exact_inner=allow_exact_inner,
+    )
+    stage2_oracle_calls += final_br_E.stage2_calls + final_br_N.stage2_calls
+    evaluated_candidates += final_br_E.evaluated_candidates + final_br_N.evaluated_candidates
+    evaluated_boundary_points += final_br_E.evaluated_boundary_points + final_br_N.evaluated_boundary_points
+
+    final_gain_E_val = max(0.0, float(final_br_E.best_revenue - esp_rev))
+    final_gain_N_val = max(0.0, float(final_br_N.best_revenue - nsp_rev))
+    final_eps = max(final_gain_E_val, final_gain_N_val)
+
+    final_gain_E = GainApproxResult(
+        provider="E",
+        gain=float(final_gain_E_val),
+        best_set=final_br_E.best_set,
+        current_revenue=float(esp_rev),
+        candidate_count=int(final_br_E.evaluated_candidates),
+    )
+    final_gain_N = GainApproxResult(
+        provider="N",
+        gain=float(final_gain_N_val),
+        best_set=final_br_N.best_set,
+        current_revenue=float(nsp_rev),
+        candidate_count=int(final_br_N.evaluated_candidates),
+    )
+
+    return StackelbergResult(
+        price=(float(pE), float(pN)),
+        offloading_set=final_set,
+        epsilon=float(final_eps),
+        gain_E=final_gain_E,
+        gain_N=final_gain_N,
+        inner_result=final_inner,
+        social_cost=float(social_cost),
+        trajectory=tuple(trajectory),
+        outer_iterations=len(trajectory),
+        stage2_oracle_calls=stage2_oracle_calls,
+        evaluated_candidates=evaluated_candidates,
+        evaluated_boundary_points=evaluated_boundary_points,
+        esp_revenue=float(esp_rev),
+        nsp_revenue=float(nsp_rev),
+        stopping_reason=stopping_reason,
+    )
+
+
 def algorithm_topk_brd_stage1(
     users: UserBatch,
     system: SystemConfig,
@@ -1239,6 +1627,10 @@ def run_stage1_solver(
 ) -> StackelbergResult:
     if cfg.stage1_solver_variant == "topk_brd":
         return algorithm_topk_brd_stage1(users, system, cfg)
+    if cfg.stage1_solver_variant == "algorithm5":
+        return algorithm_5_stackelberg_guided_search(users, system, cfg)
+    if cfg.stage1_solver_variant == "vbbr_brd":
+        return algorithm_vbbr_brd_stage1(users, system, cfg)
     return algorithm_5_stackelberg_guided_search(users, system, cfg)
 
 
@@ -1247,11 +1639,10 @@ def summarize_stackelberg_result(
     result: StackelbergResult,
     system: SystemConfig,
 ) -> str:
-    data = _build_data(users)
     pE, pN = result.price
     ratio = (len(result.offloading_set) / users.n) if users.n else 0.0
-    rev_E = _provider_revenue(data, result.offloading_set, pE, pN, "E", system)
-    rev_N = _provider_revenue(data, result.offloading_set, pE, pN, "N", system)
+    rev_E = float(result.esp_revenue)
+    rev_N = float(result.nsp_revenue)
     lines = [
         "Stackelberg Stage-I result",
         f"price = ({pE:.10g}, {pN:.10g})",

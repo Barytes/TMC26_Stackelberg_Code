@@ -64,10 +64,22 @@ class StackelbergConfig:
     stage1_neighborhood_max_candidates: int
     gain_estimator_variant: Literal["boundary", "refined_price", "topk_real_reval"]
     gain_topk_k: int
-    stage1_solver_variant: Literal["algorithm5", "topk_brd"]
+    stage1_solver_variant: Literal["algorithm5", "topk_brd", "vbbr_brd"]
     topk_brd_price_tol: float
     topk_brd_epsilon_tol: float
     topk_brd_cycle_window: int
+    vbbr_local_R: int
+    vbbr_local_S: int
+    vbbr_local_budget: int
+    vbbr_top_m: int
+    vbbr_oracle_max_rounds: int
+    vbbr_oracle_improve_tol: float
+    vbbr_no_improve_patience: int
+    vbbr_outer_gain_tol: float
+    vbbr_damping_alpha: float
+    vbbr_outer_update_mode: Literal["gain_max", "gain_min", "esp_first", "nsp_first"]
+    vbbr_cycle_window: int
+    vbbr_disable_exact_inner: bool
 
 
 @dataclass(frozen=True)
@@ -197,10 +209,22 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         stage1_neighborhood_max_candidates=int(raw.get("stage1_neighborhood_max_candidates", 256)),
         gain_estimator_variant=str(raw.get("gain_estimator_variant", "boundary")).strip().lower(),
         gain_topk_k=int(raw.get("gain_topk_k", 4)),
-        stage1_solver_variant=str(raw.get("stage1_solver_variant", "algorithm5")).strip().lower(),
+        stage1_solver_variant=str(raw.get("stage1_solver_variant", "vbbr_brd")).strip().lower(),
         topk_brd_price_tol=float(raw.get("topk_brd_price_tol", 1e-6)),
         topk_brd_epsilon_tol=float(raw.get("topk_brd_epsilon_tol", 1e-7)),
         topk_brd_cycle_window=int(raw.get("topk_brd_cycle_window", 6)),
+        vbbr_local_R=int(raw.get("vbbr_local_R", 2)),
+        vbbr_local_S=int(raw.get("vbbr_local_S", 2)),
+        vbbr_local_budget=int(raw.get("vbbr_local_budget", raw.get("vbbr_local_budget_B", 3))),
+        vbbr_top_m=int(raw.get("vbbr_top_m", 6)),
+        vbbr_oracle_max_rounds=int(raw.get("vbbr_oracle_max_rounds", 6)),
+        vbbr_oracle_improve_tol=float(raw.get("vbbr_oracle_improve_tol", 1e-8)),
+        vbbr_no_improve_patience=int(raw.get("vbbr_no_improve_patience", 1)),
+        vbbr_outer_gain_tol=float(raw.get("vbbr_outer_gain_tol", 1e-7)),
+        vbbr_damping_alpha=float(raw.get("vbbr_damping_alpha", 1.0)),
+        vbbr_outer_update_mode=str(raw.get("vbbr_outer_update_mode", "esp_first")).strip().lower(),
+        vbbr_cycle_window=int(raw.get("vbbr_cycle_window", 8)),
+        vbbr_disable_exact_inner=bool(raw.get("vbbr_disable_exact_inner", False)),
     )
     if cfg.initial_pE <= 0 or cfg.initial_pN <= 0:
         raise ValueError("Initial prices must be positive.")
@@ -222,12 +246,32 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         raise ValueError("gain_estimator_variant must be 'boundary', 'refined_price', or 'topk_real_reval'.")
     if cfg.gain_topk_k <= 0:
         raise ValueError("gain_topk_k must be positive.")
-    if cfg.stage1_solver_variant not in {"algorithm5", "topk_brd"}:
-        raise ValueError("stage1_solver_variant must be 'algorithm5' or 'topk_brd'.")
+    if cfg.stage1_solver_variant not in {"algorithm5", "topk_brd", "vbbr_brd"}:
+        raise ValueError("stage1_solver_variant must be 'algorithm5', 'topk_brd', or 'vbbr_brd'.")
     if cfg.topk_brd_price_tol <= 0 or cfg.topk_brd_epsilon_tol <= 0:
         raise ValueError("topk_brd tolerances must be positive.")
     if cfg.topk_brd_cycle_window < 2:
         raise ValueError("topk_brd_cycle_window must be at least 2.")
+    if cfg.vbbr_local_R < 0 or cfg.vbbr_local_S < 0:
+        raise ValueError("vbbr_local_R and vbbr_local_S must be non-negative.")
+    if cfg.vbbr_local_budget < 0:
+        raise ValueError("vbbr_local_budget must be non-negative.")
+    if cfg.vbbr_local_budget > cfg.vbbr_local_R + cfg.vbbr_local_S:
+        raise ValueError("vbbr_local_budget must satisfy budget <= R + S.")
+    if cfg.vbbr_top_m <= 0:
+        raise ValueError("vbbr_top_m must be positive.")
+    if cfg.vbbr_oracle_max_rounds <= 0:
+        raise ValueError("vbbr_oracle_max_rounds must be positive.")
+    if cfg.vbbr_oracle_improve_tol <= 0 or cfg.vbbr_outer_gain_tol <= 0:
+        raise ValueError("vbbr_oracle_improve_tol and vbbr_outer_gain_tol must be positive.")
+    if cfg.vbbr_no_improve_patience <= 0:
+        raise ValueError("vbbr_no_improve_patience must be positive.")
+    if cfg.vbbr_damping_alpha <= 0 or cfg.vbbr_damping_alpha > 1:
+        raise ValueError("vbbr_damping_alpha must satisfy 0 < alpha <= 1.")
+    if cfg.vbbr_outer_update_mode not in {"gain_max", "gain_min", "esp_first", "nsp_first"}:
+        raise ValueError("vbbr_outer_update_mode must be 'gain_max', 'gain_min', 'esp_first', or 'nsp_first'.")
+    if cfg.vbbr_cycle_window < 2:
+        raise ValueError("vbbr_cycle_window must be at least 2.")
     return cfg
 
 

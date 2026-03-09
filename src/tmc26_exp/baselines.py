@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import itertools
 import math
 import os
@@ -16,7 +16,7 @@ from .stackelberg import (
     algorithm_2_heuristic_user_selection,
     algorithm_3_gain_approximation,
     algorithm_4_optimal_rne_sampling,
-    algorithm_5_stackelberg_guided_search,
+    run_stage1_solver,
 )
 
 
@@ -1635,16 +1635,17 @@ def proposed_gsse(
     system: SystemConfig,
     stack_cfg: StackelbergConfig,
 ) -> BaselineOutcome:
-    res = algorithm_5_stackelberg_guided_search(users, system, stack_cfg)
+    gsse_cfg = replace(stack_cfg, stage1_solver_variant="vbbr_brd")
+    res = run_stage1_solver(users, system, gsse_cfg)
     return _evaluate(
         users,
         res.offloading_set,
         res.price[0],
         res.price[1],
         system,
-        stack_cfg,
+        gsse_cfg,
         "GSSE",
-        meta={"search_steps": len(res.trajectory)},
+        meta={"search_steps": len(res.trajectory), "solver_variant": "vbbr_brd"},
     )
 
 
