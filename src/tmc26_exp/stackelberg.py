@@ -50,6 +50,7 @@ class VBBROracleResult:
     best_price: float
     best_trigger_set: tuple[int, ...]
     best_set: tuple[int, ...]
+    best_stage2_result: GreedySelectionResult
     current_revenue: float
     best_revenue: float
     gain: float
@@ -403,6 +404,7 @@ def _vbbr_verified_br_oracle(
     best_price = current_price
     best_trigger_set = anchor_set
     best_set = anchor_set
+    best_stage2_result = current_stage2_result
 
     visited_sets: set[tuple[int, ...]] = {anchor_set}
     evaluated_candidates = 0
@@ -436,7 +438,7 @@ def _vbbr_verified_br_oracle(
 
         surrogate_pool.sort(key=lambda item: item[0], reverse=True)
         top_m = min(cfg.vbbr_top_m, len(surrogate_pool))
-        verified: list[tuple[float, float, tuple[int, ...], tuple[int, ...]]] = []
+        verified: list[tuple[float, float, tuple[int, ...], tuple[int, ...], GreedySelectionResult]] = []
 
         for _, trigger_set, candidate_price in surrogate_pool[:top_m]:
             if provider == "E":
@@ -457,13 +459,13 @@ def _vbbr_verified_br_oracle(
             evaluated_candidates += 1
             realized_set = stage2_eval.offloading_set
             realized_revenue = _provider_revenue_from_stage2_result(stage2_eval, eval_pE, eval_pN, provider, system)
-            verified.append((float(realized_revenue), float(candidate_price), trigger_set, realized_set))
+            verified.append((float(realized_revenue), float(candidate_price), trigger_set, realized_set, stage2_eval))
 
         if not verified:
             break
 
         verified.sort(key=lambda item: item[0], reverse=True)
-        selected_revenue, selected_price, selected_trigger_set, selected_set = verified[0]
+        selected_revenue, selected_price, selected_trigger_set, selected_set, selected_stage2 = verified[0]
 
         previous_best = best_revenue
         improvement = float(selected_revenue - previous_best)
@@ -473,6 +475,7 @@ def _vbbr_verified_br_oracle(
             best_price = float(selected_price)
             best_trigger_set = selected_trigger_set
             best_set = selected_set
+            best_stage2_result = selected_stage2
             no_improve_rounds = 0
         else:
             no_improve_rounds += 1
@@ -492,6 +495,7 @@ def _vbbr_verified_br_oracle(
         best_price=float(best_price),
         best_trigger_set=best_trigger_set,
         best_set=best_set,
+        best_stage2_result=best_stage2_result,
         current_revenue=float(current_revenue),
         best_revenue=float(best_revenue),
         gain=gain,
@@ -1332,53 +1336,142 @@ def algorithm_vbbr_brd_stage1(
 
     trajectory: list[SearchStep] = []
     prev_eps: float | None = None
-    current_set: tuple[int, ...] = tuple()
+    stage2_cur = algorithm_2_heuristic_user_selection(
+        users,
+        pE,
+        pN,
+        system,
+        cfg,
+        allow_exact_inner=allow_exact_inner,
+    )
+    stage2_oracle_calls += 1
+    current_revenue_E = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "E", system)
+    current_revenue_N = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "N", system)
 
     for t in range(cfg.search_max_iters):
-        stage2_cur = algorithm_2_heuristic_user_selection(
-            users,
-            pE,
-            pN,
-            system,
-            cfg,
-            allow_exact_inner=allow_exact_inner,
-        )
-        stage2_oracle_calls += 1
         current_set = stage2_cur.offloading_set
-        current_revenue_E = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "E", system)
-        current_revenue_N = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "N", system)
+        br_E: VBBROracleResult | None = None
+        br_N: VBBROracleResult | None = None
+        gain_E = float("nan")
+        gain_N = float("nan")
 
-        br_E = _vbbr_verified_br_oracle(
-            users,
-            data,
-            "E",
-            pE,
-            pN,
-            current_stage2_result=stage2_cur,
-            current_revenue=current_revenue_E,
-            system=system,
-            cfg=cfg,
-            allow_exact_inner=allow_exact_inner,
-        )
-        br_N = _vbbr_verified_br_oracle(
-            users,
-            data,
-            "N",
-            pE,
-            pN,
-            current_stage2_result=stage2_cur,
-            current_revenue=current_revenue_N,
-            system=system,
-            cfg=cfg,
-            allow_exact_inner=allow_exact_inner,
-        )
-        stage2_oracle_calls += br_E.stage2_calls + br_N.stage2_calls
-        evaluated_candidates += br_E.evaluated_candidates + br_N.evaluated_candidates
-        evaluated_boundary_points += br_E.evaluated_boundary_points + br_N.evaluated_boundary_points
+        if update_mode in {"gain_max", "gain_min"}:
+            br_E = _vbbr_verified_br_oracle(
+                users,
+                data,
+                "E",
+                pE,
+                pN,
+                current_stage2_result=stage2_cur,
+                current_revenue=current_revenue_E,
+                system=system,
+                cfg=cfg,
+                allow_exact_inner=allow_exact_inner,
+            )
+            br_N = _vbbr_verified_br_oracle(
+                users,
+                data,
+                "N",
+                pE,
+                pN,
+                current_stage2_result=stage2_cur,
+                current_revenue=current_revenue_N,
+                system=system,
+                cfg=cfg,
+                allow_exact_inner=allow_exact_inner,
+            )
+            stage2_oracle_calls += br_E.stage2_calls + br_N.stage2_calls
+            evaluated_candidates += br_E.evaluated_candidates + br_N.evaluated_candidates
+            evaluated_boundary_points += br_E.evaluated_boundary_points + br_N.evaluated_boundary_points
 
-        gain_E = max(0.0, float(br_E.best_revenue - current_revenue_E))
-        gain_N = max(0.0, float(br_N.best_revenue - current_revenue_N))
-        eps = max(gain_E, gain_N)
+            gain_E = max(0.0, float(br_E.best_revenue - current_revenue_E))
+            gain_N = max(0.0, float(br_N.best_revenue - current_revenue_N))
+            eps = max(gain_E, gain_N)
+            have_bilateral_check = True
+            if update_mode == "gain_max":
+                update_esp = gain_E >= gain_N
+            else:
+                update_esp = gain_E <= gain_N
+        else:
+            update_esp = next_update_esp
+            next_update_esp = not next_update_esp
+            have_bilateral_check = False
+
+            if update_esp:
+                br_E = _vbbr_verified_br_oracle(
+                    users,
+                    data,
+                    "E",
+                    pE,
+                    pN,
+                    current_stage2_result=stage2_cur,
+                    current_revenue=current_revenue_E,
+                    system=system,
+                    cfg=cfg,
+                    allow_exact_inner=allow_exact_inner,
+                )
+                stage2_oracle_calls += br_E.stage2_calls
+                evaluated_candidates += br_E.evaluated_candidates
+                evaluated_boundary_points += br_E.evaluated_boundary_points
+                gain_E = max(0.0, float(br_E.best_revenue - current_revenue_E))
+                eps = gain_E
+                if gain_E < cfg.vbbr_outer_gain_tol:
+                    br_N = _vbbr_verified_br_oracle(
+                        users,
+                        data,
+                        "N",
+                        pE,
+                        pN,
+                        current_stage2_result=stage2_cur,
+                        current_revenue=current_revenue_N,
+                        system=system,
+                        cfg=cfg,
+                        allow_exact_inner=allow_exact_inner,
+                    )
+                    stage2_oracle_calls += br_N.stage2_calls
+                    evaluated_candidates += br_N.evaluated_candidates
+                    evaluated_boundary_points += br_N.evaluated_boundary_points
+                    gain_N = max(0.0, float(br_N.best_revenue - current_revenue_N))
+                    eps = max(gain_E, gain_N)
+                    have_bilateral_check = True
+            else:
+                br_N = _vbbr_verified_br_oracle(
+                    users,
+                    data,
+                    "N",
+                    pE,
+                    pN,
+                    current_stage2_result=stage2_cur,
+                    current_revenue=current_revenue_N,
+                    system=system,
+                    cfg=cfg,
+                    allow_exact_inner=allow_exact_inner,
+                )
+                stage2_oracle_calls += br_N.stage2_calls
+                evaluated_candidates += br_N.evaluated_candidates
+                evaluated_boundary_points += br_N.evaluated_boundary_points
+                gain_N = max(0.0, float(br_N.best_revenue - current_revenue_N))
+                eps = gain_N
+                if gain_N < cfg.vbbr_outer_gain_tol:
+                    br_E = _vbbr_verified_br_oracle(
+                        users,
+                        data,
+                        "E",
+                        pE,
+                        pN,
+                        current_stage2_result=stage2_cur,
+                        current_revenue=current_revenue_E,
+                        system=system,
+                        cfg=cfg,
+                        allow_exact_inner=allow_exact_inner,
+                    )
+                    stage2_oracle_calls += br_E.stage2_calls
+                    evaluated_candidates += br_E.evaluated_candidates
+                    evaluated_boundary_points += br_E.evaluated_boundary_points
+                    gain_E = max(0.0, float(br_E.best_revenue - current_revenue_E))
+                    eps = max(gain_E, gain_N)
+                    have_bilateral_check = True
+
         eps_delta = float("nan") if prev_eps is None else (prev_eps - eps)
         prev_eps = eps
 
@@ -1390,8 +1483,8 @@ def algorithm_vbbr_brd_stage1(
                 pN=float(pN),
                 epsilon=float(eps),
                 epsilon_delta=float(eps_delta),
-                esp_best_set_size=len(br_E.best_set),
-                nsp_best_set_size=len(br_N.best_set),
+                esp_best_set_size=(len(br_E.best_set) if br_E is not None else 0),
+                nsp_best_set_size=(len(br_N.best_set) if br_N is not None else 0),
                 esp_gain=float(gain_E),
                 nsp_gain=float(gain_N),
             )
@@ -1405,34 +1498,50 @@ def algorithm_vbbr_brd_stage1(
         if cycle_hits >= cfg.vbbr_cycle_window:
             stopping_reason = "cycle_safeguard"
             break
-        if gain_E < cfg.vbbr_outer_gain_tol and gain_N < cfg.vbbr_outer_gain_tol:
+        if have_bilateral_check and gain_E < cfg.vbbr_outer_gain_tol and gain_N < cfg.vbbr_outer_gain_tol:
             stopping_reason = "verified_gain_tolerance"
             break
 
-        if update_mode == "gain_max":
-            update_esp = gain_E >= gain_N
-        elif update_mode == "gain_min":
-            update_esp = gain_E <= gain_N
-        else:
-            update_esp = next_update_esp
-            next_update_esp = not next_update_esp
+        selected_oracle = br_E if update_esp else br_N
+        if selected_oracle is None:
+            continue
+
+        prev_pE, prev_pN = pE, pN
 
         if update_esp:
-            target_pE = max(system.cE, float(br_E.best_price))
+            target_pE = max(system.cE, float(selected_oracle.best_price))
             pE = max(system.cE, float((1.0 - alpha) * pE + alpha * target_pE))
         else:
-            target_pN = max(system.cN, float(br_N.best_price))
+            target_pN = max(system.cN, float(selected_oracle.best_price))
             pN = max(system.cN, float((1.0 - alpha) * pN + alpha * target_pN))
 
-    stage2_final = algorithm_2_heuristic_user_selection(
-        users,
-        pE,
-        pN,
-        system,
-        cfg,
-        allow_exact_inner=allow_exact_inner,
-    )
-    stage2_oracle_calls += 1
+        if abs(pE - prev_pE) + abs(pN - prev_pN) <= 1e-12:
+            continue
+
+        reuse_stage2 = False
+        if abs(alpha - 1.0) <= 1e-12:
+            if update_esp and abs(pE - max(system.cE, float(selected_oracle.best_price))) <= 1e-12:
+                stage2_cur = selected_oracle.best_stage2_result
+                reuse_stage2 = True
+            if (not update_esp) and abs(pN - max(system.cN, float(selected_oracle.best_price))) <= 1e-12:
+                stage2_cur = selected_oracle.best_stage2_result
+                reuse_stage2 = True
+
+        if not reuse_stage2:
+            stage2_cur = algorithm_2_heuristic_user_selection(
+                users,
+                pE,
+                pN,
+                system,
+                cfg,
+                allow_exact_inner=allow_exact_inner,
+            )
+            stage2_oracle_calls += 1
+
+        current_revenue_E = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "E", system)
+        current_revenue_N = _provider_revenue_from_stage2_result(stage2_cur, pE, pN, "N", system)
+
+    stage2_final = stage2_cur
     final_set = stage2_final.offloading_set
     final_inner = stage2_final.inner_result
     social_cost = float(stage2_final.social_cost)

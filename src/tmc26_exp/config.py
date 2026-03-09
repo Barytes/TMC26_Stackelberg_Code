@@ -217,7 +217,7 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         vbbr_local_S=int(raw.get("vbbr_local_S", 2)),
         vbbr_local_budget=int(raw.get("vbbr_local_budget", raw.get("vbbr_local_budget_B", 3))),
         vbbr_top_m=int(raw.get("vbbr_top_m", 6)),
-        vbbr_oracle_max_rounds=int(raw.get("vbbr_oracle_max_rounds", 6)),
+        vbbr_oracle_max_rounds=int(raw.get("vbbr_oracle_max_rounds", 1)),
         vbbr_oracle_improve_tol=float(raw.get("vbbr_oracle_improve_tol", 1e-8)),
         vbbr_no_improve_patience=int(raw.get("vbbr_no_improve_patience", 1)),
         vbbr_outer_gain_tol=float(raw.get("vbbr_outer_gain_tol", 1e-7)),
