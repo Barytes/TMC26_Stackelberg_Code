@@ -1,2 +1,0 @@
-trial,seed,n_users,runtime_sec,stage2_calls,search_iterations,final_epsilon,final_offloading_size
-0,20280005,20,32.71781409200048,2,4,97.30989984341734,0

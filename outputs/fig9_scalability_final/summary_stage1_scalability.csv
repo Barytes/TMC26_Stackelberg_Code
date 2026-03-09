@@ -1,2 +1,0 @@
-n_users,runtime_mean,runtime_std,stage2_calls_mean,stage2_calls_std,search_iters_mean,search_iters_std,final_epsilon_mean,final_epsilon_std,count
-20,32.71781409200048,0.0,2.0,0.0,4.0,0.0,97.30989984341734,0.0,1

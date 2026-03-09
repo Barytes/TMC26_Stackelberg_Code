@@ -1,5 +1,0 @@
-n_users,method,joint_revenue_mean,joint_revenue_std,count
-20,GSSE,0.0,0.0,1
-20,MarketEquilibrium,41.02850836335767,0.0,1
-20,RandomOffloading,66.00550596107071,0.0,1
-20,SingleSP,192.8202589754089,0.0,1

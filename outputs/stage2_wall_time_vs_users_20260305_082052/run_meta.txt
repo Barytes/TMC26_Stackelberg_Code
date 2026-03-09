@@ -1,9 +1,0 @@
-timestamp_utc = 2026-03-05T00:39:58.684275+00:00
-config = configs/default.toml
-pE = 0.5
-pN = 0.5
-user_counts = [10, 20, 50, 100, 200, 500]
-trials = 5
-methods = Algorithm2, UBRD, VI, PEN, CS
-skipped_cs_counts = [20, 50, 100, 200, 500]
-metric = physical wall-clock time measured by perf_counter

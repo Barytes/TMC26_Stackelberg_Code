@@ -10,6 +10,8 @@ dependencies = [
   "scipy>=1.17.1",
   "tomli>=2.0.1; python_version < '3.11'",
   "gekko>=1.0.6",
+  "pyomo>=6.10.0",
+  "pyscipopt>=6.1.0",
 ]
 
 [project.scripts]

@@ -1,8 +1,0 @@
-timestamp_utc = 2026-03-08T22:55:21.410039+00:00
-config = configs/stage1_fig6_extdomain.toml
-n_users = 40
-trials = 1
-seed = 20260002
-esp_csv = outputs/real_revenue_contours_ext7/esp_real_revenue.csv
-nsp_csv = outputs/real_revenue_contours_ext7/nsp_real_revenue.csv
-contours_available = True

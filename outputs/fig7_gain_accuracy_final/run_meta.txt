@@ -1,9 +1,0 @@
-timestamp_utc = 2026-03-08T16:00:26.338333+00:00
-config = configs/default.toml
-n_users = [6, 8]
-trials = 1
-samples_per_trial = 5
-seed = 20260003
-total_samples = 20
-abs_error_mean = 55.346773
-rel_error_mean = 293.338040

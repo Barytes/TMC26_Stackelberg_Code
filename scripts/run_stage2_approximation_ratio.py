@@ -1,285 +1,411 @@
-#!/usr/bin/env python3
-"""Stage II: Approximation ratio validation (Theorem 2).
-
-This script validates the theoretical approximation ratio bound from Theorem 2.
-
-Computes:
-- Empirical ratio: V(Algorithm 2) / V(Optimal)
-- Theoretical upper bound from Theorem 2
-
-Output: Plot comparing empirical ratio to theoretical bound.
-"""
-
 from __future__ import annotations
 
 import argparse
 import csv
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-import statistics
-import sys
-
-
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tmc26_exp.config import load_config
+from tmc26_exp.baselines import (
+    _solve_centralized_minlp,
+    _solve_centralized_pyomo_scip,
+    baseline_stage2_centralized_solver,
+)
+from tmc26_exp.config import ExperimentConfig, StackelbergConfig, SystemConfig, load_config
 from tmc26_exp.model import UserBatch, local_cost, theta
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import (
+    InnerSolveResult,
+    _build_data,
+    _heuristic_score_with_t,
+    _solve_fixed_set_inner_exact,
     algorithm_1_distributed_primal_dual,
     algorithm_2_heuristic_user_selection,
-    _build_data,
-    _sorted_tuple,
 )
-from tmc26_exp.baselines import baseline_stage2_centralized_solver
 
 
-def compute_local_cost_only(users: UserBatch) -> float:
-    """Compute social cost when all users compute locally (empty offloading set)."""
-    return float(np.sum(local_cost(users)))
+def _positive_float(raw: str) -> float:
+    value = float(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("Value must be > 0.")
+    return value
 
 
-def compute_theorem2_bound(
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("Value must be a positive integer.")
+    return value
+
+
+def _parse_n_users_list(raw: str) -> list[int]:
+    items = [x.strip() for x in raw.split(",") if x.strip()]
+    if not items:
+        raise argparse.ArgumentTypeError("n-users-list cannot be empty.")
+    values = [int(x) for x in items]
+    if any(v <= 0 for v in values):
+        raise argparse.ArgumentTypeError("Each n in n-users-list must be > 0.")
+    return values
+
+
+def _default_output_dir(base_output_dir: str) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path(base_output_dir) / f"run_stage2_approximation_ratio_{timestamp}"
+
+
+def _axis_min_with_cap(a: np.ndarray, price: float, cap: float) -> np.ndarray:
+    eps = 1e-12
+    p = max(float(price), eps)
+    u = max(float(cap), eps)
+    a_pos = np.maximum(np.asarray(a, dtype=float), 0.0)
+    x_star = np.sqrt(a_pos / p)
+    unclipped = 2.0 * np.sqrt(a_pos * p)
+    capped = a_pos / u + p * u
+    return np.where(x_star <= u, unclipped, capped)
+
+
+def _compute_delta_hat_star(users: UserBatch, pE: float, pN: float, system: SystemConfig) -> float:
+    cl = local_cost(users)
+    aw = users.alpha * users.w
+    th = theta(users)
+    min_f_term = _axis_min_with_cap(aw, pE, system.F)
+    min_b_term = _axis_min_with_cap(th, pN, system.B)
+    delta_hat = cl - min_f_term - min_b_term
+    return float(np.max(delta_hat))
+
+
+def _solve_inner(
+    users: UserBatch,
+    offloading_set: set[int],
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+    inner_solver: str,
+) -> InnerSolveResult:
+    if inner_solver == "exact":
+        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+        if inner is None:
+            raise RuntimeError("Exact inner solver failed for a fixed set; cannot continue in exact mode.")
+        return inner
+    if inner_solver == "primal_dual":
+        return algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
+    if inner_solver == "hybrid":
+        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
+        if inner is None:
+            inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
+        return inner
+    raise ValueError(f"Unknown inner_solver={inner_solver}")
+
+
+def _social_cost_from_inner(local_costs: np.ndarray, n_users: int, inner: InnerSolveResult) -> float:
+    outside = set(range(n_users)) - set(inner.offloading_set)
+    return inner.offloading_objective + (float(np.sum(local_costs[list(outside)])) if outside else 0.0)
+
+
+def _algorithm2_social_cost(
     users: UserBatch,
     pE: float,
     pN: float,
-    system,
-    cfg,
-) -> tuple[float, float, int]:
-    """Compute theorem upper bound exactly matching Eq. (app-bound).
-
-    ΔĈ_i := max_{0<f<=F,0<b<=B} {C_i^l - C_i^e(f,b)}
-    with C_i^e(f,b)=aw_i/f + th_i/b + pE*f + pN*b.
-    Returns: (bound, v_empty, optimal_offloading_size)
-    """
-    v_empty = compute_local_cost_only(users)
-
-    opt_result = baseline_stage2_centralized_solver(users, pE, pN, system, cfg.stackelberg, cfg.baselines)
-    opt_set_size = len(opt_result.offloading_set)
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+    inner_solver: str,
+) -> float:
+    if inner_solver == "hybrid":
+        out = algorithm_2_heuristic_user_selection(users, pE, pN, system, cfg)
+        return float(out.social_cost)
 
     data = _build_data(users)
+    active_users: set[int] = set(range(users.n))
+    offloading_set: set[int] = set()
+    previous_ve = 0.0
+    last_added: int | None = None
 
-    def one_dim_min(a: float, t: float, upper: float) -> float:
-        x_star = np.sqrt(max(a, 1e-12) / max(t, 1e-12))
-        if x_star <= upper:
-            return 2.0 * np.sqrt(max(a, 1e-12) * max(t, 1e-12))
-        return a / upper + t * upper
+    for _t in range(cfg.greedy_max_iters):
+        inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
+        ve = inner.offloading_objective
 
-    best_marginal_gain = 0.0
-    for i in range(users.n):
-        ce_min = one_dim_min(float(data.aw[i]), float(pE), float(system.F)) + one_dim_min(
-            float(data.th[i]), float(pN), float(system.B)
+        if last_added is not None:
+            delta_true = ve - previous_ve - data.cl[last_added]
+            if delta_true >= 0.0:
+                offloading_set.discard(last_added)
+                active_users.discard(last_added)
+                inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
+                ve = inner.offloading_objective
+
+        candidates = sorted(active_users - offloading_set)
+        if not candidates:
+            break
+
+        if offloading_set:
+            lambda_F, lambda_B = inner.lambda_F, inner.lambda_B
+        else:
+            lambda_F, lambda_B = 0.0, 0.0
+
+        best_user = min(
+            candidates,
+            key=lambda j: _heuristic_score_with_t(data, j, pE + lambda_F, pN + lambda_B, system),
         )
-        marginal_gain = float(data.cl[i] - ce_min)
-        if marginal_gain > best_marginal_gain:
-            best_marginal_gain = marginal_gain
+        best_score = _heuristic_score_with_t(data, best_user, pE + lambda_F, pN + lambda_B, system)
 
-    if best_marginal_gain <= 0:
-        return float("inf"), v_empty, opt_set_size
+        if best_score < 0.0:
+            previous_ve = ve
+            offloading_set.add(best_user)
+            last_added = best_user
+            continue
+        break
 
-    numerator = v_empty - best_marginal_gain
-    denominator = v_empty - opt_set_size * best_marginal_gain
-    if denominator <= 0:
-        return float("inf"), v_empty, opt_set_size
-    return float(numerator / denominator), v_empty, opt_set_size
-
-
-def _mean_std(values: list[float]) -> tuple[float, float]:
-    if len(values) == 1:
-        return values[0], 0.0
-    return statistics.fmean(values), statistics.stdev(values)
+    final_inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
+    return float(_social_cost_from_inner(data.cl, users.n, final_inner))
 
 
-def _write_raw_csv(rows: list[dict[str, object]], out_path: Path) -> None:
-    fields = [
-        "trial", "seed", "n_users",
-        "v_algorithm2", "v_optimal", "v_empty",
-        "empirical_ratio", "theorem2_bound",
-        "optimal_offloading_size",
-    ]
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        w.writerows(rows)
+def _run_centralized(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    cfg: ExperimentConfig,
+    centralized_solver: str,
+):
+    if centralized_solver == "gekko":
+        out = _solve_centralized_minlp(users, pE, pN, system, cfg.stackelberg, cfg.baselines)
+        success = bool(out.meta.get("success", True))
+        return out, success
+    if centralized_solver == "pyomo_scip":
+        out = _solve_centralized_pyomo_scip(users, pE, pN, system, cfg.stackelberg, cfg.baselines)
+        success = bool(out.meta.get("success", True))
+        return out, success
+    if centralized_solver == "enum":
+        out = baseline_stage2_centralized_solver(users, pE, pN, system, cfg.stackelberg, cfg.baselines)
+        return out, True
+    raise ValueError(f"Unknown centralized_solver={centralized_solver}")
 
 
-def _write_summary_csv(rows: list[dict[str, object]], out_path: Path) -> list[dict]:
-    """Aggregate by n_users."""
-    grouped: dict[int, list[dict[str, object]]] = {}
-    for row in rows:
-        grouped.setdefault(int(row["n_users"]), []).append(row)
-
-    summary_rows: list[dict] = []
+def _write_points_csv(out_path: Path, rows: list[dict[str, float | int | str | bool]]) -> None:
     fields = [
         "n_users",
-        "empirical_ratio_mean", "empirical_ratio_std",
-        "theorem2_bound_mean", "theorem2_bound_std",
-        "v_optimal_mean", "v_empty_mean",
-        "count",
+        "trial",
+        "V0",
+        "V_DG",
+        "V_Xstar",
+        "Xstar_size",
+        "delta_hat_star",
+        "bound",
+        "ratio",
+        "slack",
+        "violated",
+        "valid",
+        "centralized_success",
+        "centralized_solver",
+    ]
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _violation_rate_str(num_violations: int, num_valid: int) -> str:
+    if num_valid <= 0:
+        return "nan"
+    return f"{(100.0 * num_violations / num_valid):.4f}%"
+
+
+def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Path) -> None:
+    valid_rows = [
+        r
+        for r in rows
+        if bool(r["valid"])
+        and np.isfinite(float(r["bound"]))
+        and np.isfinite(float(r["ratio"]))
     ]
 
-    with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for n_users in sorted(grouped.keys()):
-            bucket = grouped[n_users]
-            emp_ratios = [float(r["empirical_ratio"]) for r in bucket if float(r["empirical_ratio"]) < float('inf')]
-            bounds = [float(r["theorem2_bound"]) for r in bucket if float(r["theorem2_bound"]) < float('inf')]
-            v_opts = [float(r["v_optimal"]) for r in bucket]
-            v_empties = [float(r["v_empty"]) for r in bucket]
+    fig, ax = plt.subplots(figsize=(8.4, 6.2), dpi=150)
+    cmap = plt.get_cmap("tab10")
 
-            emp_mean, emp_std = _mean_std(emp_ratios) if emp_ratios else (0.0, 0.0)
-            bound_mean, bound_std = _mean_std(bounds) if bounds else (0.0, 0.0)
-            vopt_mean, _ = _mean_std(v_opts)
-            vempty_mean, _ = _mean_std(v_empties)
+    ns = sorted({int(r["n_users"]) for r in rows})
+    for idx, n in enumerate(ns):
+        n_rows = [r for r in valid_rows if int(r["n_users"]) == n]
+        if not n_rows:
+            continue
+        bounds = np.asarray([float(r["bound"]) for r in n_rows], dtype=float)
+        ratios = np.asarray([float(r["ratio"]) for r in n_rows], dtype=float)
+        color = cmap(idx % 10)
+        ax.scatter(bounds, ratios, s=34, alpha=0.9, color=color, label=f"n={n}")
 
-            row = {
-                "n_users": n_users,
-                "empirical_ratio_mean": emp_mean,
-                "empirical_ratio_std": emp_std,
-                "theorem2_bound_mean": bound_mean,
-                "theorem2_bound_std": bound_std,
-                "v_optimal_mean": vopt_mean,
-                "v_empty_mean": vempty_mean,
-                "count": len(bucket),
-            }
-            summary_rows.append(row)
-            w.writerow(row)
+    violation_rows = [r for r in valid_rows if bool(r["violated"])]
+    if violation_rows:
+        x_v = np.asarray([float(r["bound"]) for r in violation_rows], dtype=float)
+        y_v = np.asarray([float(r["ratio"]) for r in violation_rows], dtype=float)
+        ax.scatter(x_v, y_v, s=58, marker="x", color="red", linewidths=1.1, label="Violation (ratio > bound)")
 
-    return summary_rows
+    if valid_rows:
+        x_all = np.asarray([float(r["bound"]) for r in valid_rows], dtype=float)
+        y_all = np.asarray([float(r["ratio"]) for r in valid_rows], dtype=float)
+        low = float(min(np.min(x_all), np.min(y_all)))
+        high = float(max(np.max(x_all), np.max(y_all)))
+        pad = 0.03 * max(high - low, 1e-6)
+        low -= pad
+        high += pad
+        ax.plot([low, high], [low, high], linestyle="--", color="black", linewidth=1.3, label="y = x")
+        ax.set_xlim(low, high)
+        ax.set_ylim(low, high)
 
-
-def _plot(summary_rows: list[dict], out_path: Path) -> None:
-    """Plot empirical ratio and theoretical bound."""
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-
-    x = [int(r["n_users"]) for r in summary_rows]
-    y_emp = [float(r["empirical_ratio_mean"]) for r in summary_rows]
-    yerr_emp = [float(r["empirical_ratio_std"]) for r in summary_rows]
-    y_bound = [float(r["theorem2_bound_mean"]) for r in summary_rows]
-
-    # Plot empirical ratio
-    ax.errorbar(x, y_emp, yerr=yerr_emp, marker='o', color='#1b5e20',
-                linewidth=2.0, capsize=4, label='Empirical Ratio', markersize=8)
-
-    # Plot theoretical bound
-    ax.plot(x, y_bound, marker='s', color='#b71c1c',
-            linewidth=2.0, linestyle='--', label='Theorem 2 Bound', markersize=8)
-
-    ax.set_title("Algorithm 2 Approximation Ratio vs Number of Users\n(Theorem 2 Validation)")
-    ax.set_xlabel("Number of Users")
-    ax.set_ylabel("Approximation Ratio")
-    ax.set_xticks(x)
-    ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
-    ax.legend(loc="upper right")
-
-    # Ensure y-axis starts from a reasonable minimum
-    all_y = y_emp + y_bound
-    if all_y:
-        ymin = min(min(all_y) * 0.9, 0.9)
-        ymax = max(max(all_y) * 1.1, 1.1)
-        ax.set_ylim(ymin, ymax)
-
+    ax.set_xlabel("Theoretical Upper Bound (RHS)")
+    ax.set_ylabel("Empirical Ratio V(X_DG)/V(X*)")
+    ax.set_title("Empirical Approximation Ratio vs Theoretical Bound (Stage II)")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="upper right", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Algorithm 2 approximation ratio validation (Theorem 2)")
-    parser.add_argument("--config", type=str, default="configs/default.toml")
-    parser.add_argument("--n-users", type=str, default="6,8,10,12,14,16")
-    parser.add_argument("--trials", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=20262001)
-    parser.add_argument("--pE", type=float, default=None)
-    parser.add_argument("--pN", type=float, default=None)
-    parser.add_argument("--run-name", type=str, default="")
+    parser = argparse.ArgumentParser(
+        description="Empirical verification of Stage-II approximation bound: ratio V(X_DG)/V(X*) vs theorem RHS."
+    )
+    parser.add_argument("--config", type=str, default="configs/final_touchup_fast.toml", help="Path to TOML config.")
+    parser.add_argument("--pE", type=_positive_float, required=True, help="Fixed pE used in Stage II.")
+    parser.add_argument("--pN", type=_positive_float, required=True, help="Fixed pN used in Stage II.")
+    parser.add_argument(
+        "--n-users-list",
+        type=_parse_n_users_list,
+        default=_parse_n_users_list("20,30,40,50"),
+        help="Comma-separated user sizes, e.g. 20,30,40,50.",
+    )
+    parser.add_argument("--trials", type=_positive_int, default=20, help="Number of random user draws per n.")
+    parser.add_argument("--seed", type=int, default=None, help="Optional seed override.")
+    parser.add_argument(
+        "--inner-solver",
+        type=str,
+        default="primal_dual",
+        choices=["hybrid", "exact", "primal_dual"],
+        help="Inner solver used in Algorithm 2.",
+    )
+    parser.add_argument(
+        "--centralized-solver",
+        type=str,
+        default="gekko",
+        choices=["gekko", "enum", "pyomo_scip"],
+        help="Centralized solver used as X* proxy.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: outputs/run_stage2_approximation_ratio_<timestamp>).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    n_users_list = [int(x.strip()) for x in args.n_users.split(",") if x.strip()]
+    seed = cfg.seed if args.seed is None else int(args.seed)
+    out_dir = Path(args.out_dir) if args.out_dir is not None else _default_output_dir(cfg.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Validate user counts
-    for n in n_users_list:
-        if n > cfg.baselines.exact_max_users:
-            raise ValueError(
-                f"n_users={n} exceeds exact_max_users={cfg.baselines.exact_max_users}. "
-                f"CS solver required for optimal solution."
+    rows: list[dict[str, float | int | str | bool]] = []
+    pE = float(args.pE)
+    pN = float(args.pN)
+    n_list = list(args.n_users_list)
+
+    for n in n_list:
+        cfg_n = replace(cfg, n_users=int(n))
+        rng = np.random.default_rng(seed + 1009 * int(n))
+        for trial in range(1, args.trials + 1):
+            users = sample_users(cfg_n, rng)
+            V0 = float(np.sum(local_cost(users)))
+            V_DG = float(_algorithm2_social_cost(users, pE, pN, cfg.system, cfg.stackelberg, args.inner_solver))
+            cs_out, cs_success = _run_centralized(users, pE, pN, cfg.system, cfg, args.centralized_solver)
+
+            V_Xstar = float(cs_out.social_cost) if cs_success else float("nan")
+            Xstar_size = int(len(cs_out.offloading_set)) if cs_success else -1
+            delta_hat_star = float(_compute_delta_hat_star(users, pE, pN, cfg.system))
+
+            bound = float("nan")
+            ratio = float("nan")
+            slack = float("nan")
+            violated = False
+            valid = False
+
+            if cs_success and np.isfinite(V_Xstar) and V_Xstar > 0.0:
+                denom = V0 - Xstar_size * delta_hat_star
+                if denom > 0.0 and np.isfinite(denom):
+                    bound = float((V0 - delta_hat_star) / denom)
+                    ratio = float(V_DG / V_Xstar)
+                    slack = float(bound - ratio)
+                    if np.isfinite(bound) and np.isfinite(ratio):
+                        valid = True
+                        violated = bool(ratio > bound)
+
+            rows.append(
+                {
+                    "n_users": int(n),
+                    "trial": int(trial),
+                    "V0": float(V0),
+                    "V_DG": float(V_DG),
+                    "V_Xstar": float(V_Xstar),
+                    "Xstar_size": int(Xstar_size),
+                    "delta_hat_star": float(delta_hat_star),
+                    "bound": float(bound),
+                    "ratio": float(ratio),
+                    "slack": float(slack),
+                    "violated": bool(violated),
+                    "valid": bool(valid),
+                    "centralized_success": bool(cs_success),
+                    "centralized_solver": str(cs_out.meta.get("solver", args.centralized_solver)),
+                }
             )
 
-    pE = float(args.pE if args.pE is not None else cfg.stackelberg.initial_pE)
-    pN = float(args.pN if args.pN is not None else cfg.stackelberg.initial_pN)
+    csv_path = out_dir / "approx_ratio_points.csv"
+    fig_path = out_dir / "approx_ratio_scatter.png"
+    summary_path = out_dir / "approx_ratio_summary.txt"
 
-    if not args.run_name:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_name = f"stage2_approximation_ratio_{timestamp}"
-    else:
-        run_name = args.run_name
-    run_dir = Path(cfg.output_dir) / run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_points_csv(csv_path, rows)
+    _plot_scatter(rows, fig_path)
 
-    raw_rows: list[dict[str, object]] = []
+    total = len(rows)
+    success_count = sum(1 for r in rows if bool(r["centralized_success"]))
+    valid_rows = [r for r in rows if bool(r["valid"])]
+    valid_count = len(valid_rows)
+    violation_count = sum(1 for r in valid_rows if bool(r["violated"]))
 
-    for n_users in n_users_list:
-        trial_cfg = replace(cfg, n_users=n_users)
-        for trial in range(args.trials):
-            seed = args.seed + 1000 * n_users + trial
-            rng = np.random.default_rng(seed)
-            users = sample_users(trial_cfg, rng)
-
-            # Run Algorithm 2
-            alg2_result = algorithm_2_heuristic_user_selection(users, pE, pN, cfg.system, cfg.stackelberg)
-            v_alg2 = alg2_result.social_cost
-
-            # Run CS solver for optimal
-            cs_result = baseline_stage2_centralized_solver(users, pE, pN, cfg.system, cfg.stackelberg, cfg.baselines)
-            v_optimal = cs_result.social_cost
-
-            # Compute Theorem 2 bound
-            bound, v_empty, opt_size = compute_theorem2_bound(users, pE, pN, cfg.system, cfg)
-
-            # Empirical ratio
-            empirical_ratio = v_alg2 / max(v_optimal, 1e-12)
-
-            raw_rows.append({
-                "trial": trial,
-                "seed": seed,
-                "n_users": n_users,
-                "v_algorithm2": v_alg2,
-                "v_optimal": v_optimal,
-                "v_empty": v_empty,
-                "empirical_ratio": empirical_ratio,
-                "theorem2_bound": bound,
-                "optimal_offloading_size": opt_size,
-            })
-
-    _write_raw_csv(raw_rows, run_dir / "raw_approximation_ratio.csv")
-    summary_rows = _write_summary_csv(raw_rows, run_dir / "summary_approximation_ratio.csv")
-    _plot(summary_rows, run_dir / "approximation_ratio.png")
-
-    # Write metadata
-    meta_lines = [
-        f"timestamp_utc = {datetime.now(timezone.utc).isoformat()}",
+    summary_lines = [
         f"config = {args.config}",
-        f"pE = {pE}",
-        f"pN = {pN}",
-        f"n_users = {n_users_list}",
-        f"trials = {args.trials}",
-        f"seed = {args.seed}",
-        f"exact_max_users = {cfg.baselines.exact_max_users}",
-        "formula_empirical = V_algorithm2 / V_optimal",
-        "formula_theorem2 = (V(∅) - ΔĈ_{i*}) / (V(∅) - |X*|ΔĈ_{i*})",
+        f"seed = {seed}",
+        f"pE = {pE:.10g}",
+        f"pN = {pN:.10g}",
+        f"inner_solver = {args.inner_solver}",
+        f"centralized_solver = {args.centralized_solver}",
+        f"n_users_list = {','.join(str(n) for n in n_list)}",
+        f"trials_per_n = {args.trials}",
+        f"total_instances = {total}",
+        f"centralized_success_instances = {success_count}",
+        f"valid_instances = {valid_count}",
+        f"violations = {violation_count}",
+        f"overall_violation_rate = {_violation_rate_str(violation_count, valid_count)}",
     ]
-    (run_dir / "run_meta.txt").write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
 
-    print(f"Done. Results written to: {run_dir}")
+    for n in n_list:
+        n_rows = [r for r in rows if int(r["n_users"]) == int(n)]
+        n_success = sum(1 for r in n_rows if bool(r["centralized_success"]))
+        n_valid = [r for r in n_rows if bool(r["valid"])]
+        n_viol = sum(1 for r in n_valid if bool(r["violated"]))
+        summary_lines.extend(
+            [
+                f"--- n={n} ---",
+                f"total = {len(n_rows)}",
+                f"centralized_success = {n_success}",
+                f"valid = {len(n_valid)}",
+                f"violations = {n_viol}",
+                f"violation_rate = {_violation_rate_str(n_viol, len(n_valid))}",
+            ]
+        )
+
+    summary_path.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    print(f"Done. Files written to: {out_dir}")
 
 
 if __name__ == "__main__":

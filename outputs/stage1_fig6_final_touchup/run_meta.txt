@@ -1,8 +1,0 @@
-timestamp_utc = 2026-03-08T15:47:36.181612+00:00
-config = configs/default.toml
-n_users = 10
-trials = 1
-seed = 20260002
-esp_csv = outputs/real_revenue_contours/esp_real_revenue.csv
-nsp_csv = outputs/real_revenue_contours/nsp_real_revenue.csv
-contours_available = True

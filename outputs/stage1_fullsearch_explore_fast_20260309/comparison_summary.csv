@@ -1,4 +1,0 @@
-variant,count,iterations_mean,final_epsilon_mean,dist_to_true_se_mean,runtime_sec_mean,evaluated_candidates_mean
-baseline_two_stage_boundary,4,8.5,9.186713612052699e-10,3.6938812874153903,28.53622124849062,109.5
-full_search_boundary,4,8.5,9.186713612052699e-10,3.6938812874153903,27.541722922760528,109.5
-full_search_refined,4,8.5,6.430624921449635e-10,3.6938812874153903,29.019985062746855,109.5

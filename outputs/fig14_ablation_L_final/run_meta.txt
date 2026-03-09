@@ -1,7 +1,0 @@
-timestamp_utc = 2026-03-08T16:11:16.066003+00:00
-config = configs/default.toml
-L_values = [4]
-n_users = [20]
-trials = 1
-seed = 20281001
-parameter = rne_directions (number of sampling directions)

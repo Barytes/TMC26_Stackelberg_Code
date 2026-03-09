@@ -1,6 +1,0 @@
-timestamp_utc = 2026-03-08T17:51:27.446229+00:00
-config = configs/stage1_fast_diag.toml
-n_users = [8, 12]
-trials = 2
-audit_samples_per_trial = 2
-seed = 20260309

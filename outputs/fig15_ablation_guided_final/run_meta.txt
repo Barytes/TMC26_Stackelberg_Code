@@ -1,8 +1,0 @@
-timestamp_utc = 2026-03-08T16:14:47.500007+00:00
-config = configs/default.toml
-n_users = [20]
-trials = 1
-seed = 20282001
-max_restarts = 2
-variants = Full, NoPrio, NeighborhoodOnly, DevTargetOnly, RandomRestart
-metrics = epsilon (REAL deviation gap), runtime, stage2_oracle_calls

@@ -1,7 +1,0 @@
-timestamp_utc = 2026-03-08T16:01:41.500128+00:00
-config = configs/default.toml
-n_users = [10]
-trials = 1
-seed = 20260005
-total_experiments = 1
-total_runtime = 2.76s

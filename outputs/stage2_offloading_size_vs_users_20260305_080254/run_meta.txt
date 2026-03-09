@@ -1,9 +1,0 @@
-timestamp_utc = 2026-03-05T00:27:44.439211+00:00
-config = configs/default.toml
-pE = 0.5
-pN = 0.5
-user_counts = [10, 20, 40, 60, 80, 100]
-trials = 10
-methods = Algorithm2, UBRD, VI, PEN, CS
-skipped_cs_counts = [20, 40, 60, 80, 100]
-metric = final offloading-set cardinality

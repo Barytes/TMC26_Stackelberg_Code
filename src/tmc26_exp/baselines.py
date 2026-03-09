@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import itertools
 import math
+import os
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -35,6 +37,16 @@ class _Data:
     aw: np.ndarray
     th: np.ndarray
     cl: np.ndarray
+
+
+@dataclass(frozen=True)
+class Stage1GridEvaluation:
+    pE_grid: np.ndarray
+    pN_grid: np.ndarray
+    outcomes: list[list[BaselineOutcome]]
+    esp_rev: np.ndarray
+    nsp_rev: np.ndarray
+    eps: np.ndarray
 
 
 def _build_data(users: UserBatch) -> _Data:
@@ -219,6 +231,39 @@ def _build_outcome_from_allocations(
     )
 
 
+def _build_outcome_from_solver_allocations(
+    users: UserBatch,
+    f: np.ndarray,
+    b: np.ndarray,
+    offloading_set: tuple[int, ...],
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    name: str,
+    meta: dict[str, float | int | str] | None = None,
+) -> BaselineOutcome:
+    data = _build_data(users)
+    offloading_set = _sorted_tuple(offloading_set)
+    ce = _offload_costs(data, f, b, pE, pN)
+    off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+    loc_idx = np.asarray([i for i in range(users.n) if i not in set(offloading_set)], dtype=int)
+    social = float(np.sum(ce[off_idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+    rev_e = float((pE - system.cE) * np.sum(f[off_idx])) if off_idx.size else 0.0
+    rev_n = float((pN - system.cN) * np.sum(b[off_idx])) if off_idx.size else 0.0
+    gE = algorithm_3_gain_approximation(users, offloading_set, pE, pN, "E", system).gain
+    gN = algorithm_3_gain_approximation(users, offloading_set, pE, pN, "N", system).gain
+    return BaselineOutcome(
+        name=name,
+        price=(float(pE), float(pN)),
+        offloading_set=offloading_set,
+        social_cost=social,
+        esp_revenue=rev_e,
+        nsp_revenue=rev_n,
+        epsilon_proxy=float(max(gE, gN)),
+        meta=meta or {},
+    )
+
+
 def _repair_to_capacity(
     data: _Data,
     f: np.ndarray,
@@ -296,163 +341,388 @@ def _check_gekko_available() -> bool:
         return False
 
 
+def _resolve_scip_executable(explicit_path: str | None = None) -> str | None:
+    if explicit_path:
+        p = Path(explicit_path)
+        if p.exists():
+            return str(p)
+    env_path = os.environ.get("SCIP_EXECUTABLE")
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return str(p)
+    default_path = Path.home() / "anaconda3" / "envs" / "scip_bin" / "Library" / "bin" / "scip.exe"
+    if default_path.exists():
+        return str(default_path)
+    return "scip"
+
+
+def _solve_with_pyomo_scip(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    scip_executable: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool]:
+    import pyomo.environ as pyo
+    from pyomo.opt import TerminationCondition
+
+    n = users.n
+    data = _build_data(users)
+    eps = 1e-8
+    cap_tol = 1e-5
+    ir_tol = 1e-5
+    local_upper = float(np.sum(data.cl))
+
+    warm_set: tuple[int, ...] = tuple()
+    warm_f = np.zeros(n, dtype=float)
+    warm_b = np.zeros(n, dtype=float)
+    try:
+        warm = algorithm_2_heuristic_user_selection(users, pE, pN, system, stack_cfg)
+        warm_set = warm.offloading_set
+        warm_f = np.asarray(warm.inner_result.f, dtype=float)
+        warm_b = np.asarray(warm.inner_result.b, dtype=float)
+    except Exception:
+        pass
+    warm_lookup = set(warm_set)
+
+    m = pyo.ConcreteModel()
+    m.I = pyo.RangeSet(0, n - 1)
+    m.o = pyo.Var(m.I, within=pyo.Binary)
+    m.f = pyo.Var(m.I, within=pyo.NonNegativeReals, bounds=(0.0, float(system.F)))
+    m.b = pyo.Var(m.I, within=pyo.NonNegativeReals, bounds=(0.0, float(system.B)))
+    m.f_inv = pyo.Var(m.I, within=pyo.NonNegativeReals)
+    m.b_inv = pyo.Var(m.I, within=pyo.NonNegativeReals)
+
+    for i in range(n):
+        m.o[i].set_value(1 if i in warm_lookup else 0)
+        m.f[i].set_value(float(np.clip(warm_f[i], 0.0, system.F)) if i in warm_lookup else 0.0)
+        m.b[i].set_value(float(np.clip(warm_b[i], 0.0, system.B)) if i in warm_lookup else 0.0)
+        m.f_inv[i].set_value(1.0 / max(pyo.value(m.f[i]), eps) if i in warm_lookup else 0.0)
+        m.b_inv[i].set_value(1.0 / max(pyo.value(m.b[i]), eps) if i in warm_lookup else 0.0)
+
+    def _inv_f_rule(mm, i):
+        return mm.f_inv[i] * (mm.f[i] + eps) >= mm.o[i]
+
+    def _inv_b_rule(mm, i):
+        return mm.b_inv[i] * (mm.b[i] + eps) >= mm.o[i]
+
+    def _link_f_rule(mm, i):
+        return mm.f[i] <= system.F * mm.o[i]
+
+    def _link_b_rule(mm, i):
+        return mm.b[i] <= system.B * mm.o[i]
+
+    def _lb_f_rule(mm, i):
+        return mm.f[i] >= eps * mm.o[i]
+
+    def _lb_b_rule(mm, i):
+        return mm.b[i] >= eps * mm.o[i]
+
+    def _ir_rule(mm, i):
+        m_cost_i = max(1.0, float(data.cl[i]))
+        ce_i = data.aw[i] * mm.f_inv[i] + data.th[i] * mm.b_inv[i] + pE * mm.f[i] + pN * mm.b[i]
+        return ce_i <= data.cl[i] + m_cost_i * (1 - mm.o[i])
+
+    m.inv_f_con = pyo.Constraint(m.I, rule=_inv_f_rule)
+    m.inv_b_con = pyo.Constraint(m.I, rule=_inv_b_rule)
+    m.link_f_con = pyo.Constraint(m.I, rule=_link_f_rule)
+    m.link_b_con = pyo.Constraint(m.I, rule=_link_b_rule)
+    m.lb_f_con = pyo.Constraint(m.I, rule=_lb_f_rule)
+    m.lb_b_con = pyo.Constraint(m.I, rule=_lb_b_rule)
+    m.ir_con = pyo.Constraint(m.I, rule=_ir_rule)
+    m.cap_f = pyo.Constraint(expr=sum(m.f[i] for i in m.I) <= system.F)
+    m.cap_b = pyo.Constraint(expr=sum(m.b[i] for i in m.I) <= system.B)
+
+    def _obj_rule(mm):
+        offload = sum(
+            mm.o[i] * (data.aw[i] * mm.f_inv[i] + data.th[i] * mm.b_inv[i] + pE * mm.f[i] + pN * mm.b[i])
+            for i in mm.I
+        )
+        local = sum((1 - mm.o[i]) * data.cl[i] for i in mm.I)
+        return offload + local
+
+    m.obj = pyo.Objective(rule=_obj_rule, sense=pyo.minimize)
+
+    solver = pyo.SolverFactory("scip")
+    scip_path = _resolve_scip_executable(scip_executable)
+    if scip_path is None:
+        return np.zeros(n, dtype=float), np.zeros(n, dtype=float), tuple(), local_upper, False
+    if scip_path != "scip":
+        solver.set_executable(scip_path, validate=False)
+    if not solver.available(False):
+        return np.zeros(n, dtype=float), np.zeros(n, dtype=float), tuple(), local_upper, False
+    solver.options["limits/time"] = float(base_cfg.gekko_time_limit)
+    solver.options["limits/gap"] = float(base_cfg.gekko_mip_gap)
+    solver.options["display/verblevel"] = 0
+
+    try:
+        results = solver.solve(m, tee=False)
+        tc = results.solver.termination_condition
+        solved = tc in {
+            TerminationCondition.optimal,
+            TerminationCondition.locallyOptimal,
+            TerminationCondition.feasible,
+        }
+    except Exception:
+        solved = False
+
+    if not solved:
+        return np.zeros(n, dtype=float), np.zeros(n, dtype=float), tuple(), local_upper, False
+
+    f_vals = np.array([float(pyo.value(m.f[i])) for i in range(n)], dtype=float)
+    b_vals = np.array([float(pyo.value(m.b[i])) for i in range(n)], dtype=float)
+    o_raw = np.array([float(pyo.value(m.o[i])) for i in range(n)], dtype=float)
+    offloading_set = tuple(int(i) for i in np.flatnonzero(o_raw > 0.5))
+    ce = _offload_costs(data, f_vals, b_vals, pE, pN)
+    off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+    loc_idx = np.asarray([i for i in range(n) if i not in set(offloading_set)], dtype=int)
+    social = float(np.sum(ce[off_idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+
+    finite_ok = bool(np.all(np.isfinite(f_vals)) and np.all(np.isfinite(b_vals)) and np.isfinite(social))
+    cap_ok = bool(float(np.sum(f_vals)) <= system.F + cap_tol and float(np.sum(b_vals)) <= system.B + cap_tol)
+    if off_idx.size:
+        ir_max = float(np.max(np.maximum(ce[off_idx] - data.cl[off_idx], 0.0)))
+    else:
+        ir_max = 0.0
+    ir_ok = ir_max <= ir_tol
+    objective_ok = social <= local_upper + 1e-4
+    success = finite_ok and cap_ok and ir_ok and objective_ok
+    if not success:
+        return np.zeros(n, dtype=float), np.zeros(n, dtype=float), tuple(), local_upper, False
+    return f_vals, b_vals, offloading_set, social, True
+
+
+def _solve_centralized_pyomo_scip(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    scip_executable: str | None = None,
+) -> BaselineOutcome:
+    import time
+
+    start_time = time.perf_counter()
+    f, b, offloading_set, social_cost, success = _solve_with_pyomo_scip(
+        users, pE, pN, system, stack_cfg, base_cfg, scip_executable
+    )
+    runtime = time.perf_counter() - start_time
+    return _build_outcome_from_solver_allocations(
+        users,
+        f,
+        b,
+        offloading_set,
+        pE,
+        pN,
+        system,
+        "CS_PYOMO_SCIP",
+        meta={
+            "solver": "pyomo_scip",
+            "social_cost": round(social_cost, 6),
+            "offloading_size": len(offloading_set),
+            "runtime_sec": round(runtime, 4),
+            "success": success,
+        },
+    )
+
+
 def _solve_with_gekko(
     users: UserBatch,
     pE: float,
     pN: float,
     system: SystemConfig,
+    stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool]:
-    """
-    Solve MINLP using GEKKO with APOPT solver.
-
-    GEKKO uses APOPT (Advanced Process OPTimizer) which handles MINLP problems.
-    We use binary variables for offloading decisions and continuous variables
-    for resource allocations.
-
-    Returns:
-        f: Array of edge CPU allocations
-        b: Array of bandwidth allocations
-        offloading_set: Tuple of user indices who offload
-        social_cost: Optimal social cost
-        success: Whether solver found optimal solution
-    """
+    """Solve MINLP with GEKKO+APOPT with warm-start, two-stage solve, and strict checks."""
     from gekko import GEKKO
 
     n = users.n
     data = _build_data(users)
-
-    # Create GEKKO model (local solve, no remote)
-    m = GEKKO(remote=False)
-    m.options.SOLVER = 1  # APOPT solver
-    m.options.IMODE = 3  # Steady-state optimization
-
-    # Set solver options
-    m.solver_options = [
-        f'max_time {base_cfg.gekko_time_limit}',
-        f'minlp_maximum_iterations {base_cfg.gekko_max_iter}',
-        'minlp_as_nlp 0',  # Treat as MINLP, not NLP
-        'minlp_branch_method 1',  # Branch and bound
-        f'minlp_gap_tol {base_cfg.gekko_mip_gap}',
-    ]
-
-    # Small epsilon to avoid division by zero
     eps = 1e-8
+    cap_tol = 1e-5
+    ir_tol = 1e-5
+    bin_tol = 1e-3
+    local_upper = float(np.sum(data.cl))
 
-    # Big-M constant for variable linking
-    M = max(system.F, system.B) * 10.0
-
-    # Decision variables
-    # o[i] ∈ {0,1}: Binary offloading decision (GEKKO uses integers 0-1)
-    o = [m.Var(integer=True, lb=0, ub=1, name=f"o_{i}") for i in range(n)]
-
-    # f[i] ≥ 0: Edge CPU allocation
-    f = [m.Var(lb=0, ub=system.F, name=f"f_{i}") for i in range(n)]
-
-    # b[i] ≥ 0: Bandwidth allocation
-    b = [m.Var(lb=0, ub=system.B, name=f"b_{i}") for i in range(n)]
-
-    # Intermediate variables to avoid division by zero in objective
-    # f_inv[i] = 1 / (f[i] + eps) when o[i] = 1, else 0
-    # b_inv[i] = 1 / (b[i] + eps) when o[i] = 1, else 0
-    f_inv = [m.Var(lb=0, name=f"f_inv_{i}") for i in range(n)]
-    b_inv = [m.Var(lb=0, name=f"b_inv_{i}") for i in range(n)]
-
-    # Equations
-    for i in range(n):
-        # Inverse relationship: f_inv[i] * (f[i] + eps) >= o[i]
-        # When o[i]=1: f_inv >= 1/(f+eps), minimized at equality
-        # When o[i]=0: f_inv >= 0, minimized at 0
-        m.Equation(f_inv[i] * (f[i] + eps) >= o[i])
-
-        # Similar for bandwidth
-        m.Equation(b_inv[i] * (b[i] + eps) >= o[i])
-
-        # Variable linking with Big-M: f[i] <= M * o[i]
-        # When o[i]=0: f[i] <= 0 => f[i] = 0
-        # When o[i]=1: f[i] <= M (loose upper bound)
-        m.Equation(f[i] <= M * o[i])
-        m.Equation(b[i] <= M * o[i])
-
-        # Lower bounds: f[i] >= eps * o[i] (ensures proper offloading)
-        m.Equation(f[i] >= eps * o[i])
-        m.Equation(b[i] >= eps * o[i])
-
-        # Individual rationality constraint (with Big-M relaxation)
-        # C^e_i <= C^l_i + M * (1 - o[i])
-        # When o[i]=1: C^e_i <= C^l_i (user benefits from offloading)
-        # When o[i]=0: constraint is relaxed
-        ce_i = data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i]
-        m.Equation(ce_i <= data.cl[i] + M * (1 - o[i]))
-
-    # Capacity constraints
-    m.Equation(sum(f) <= system.F)
-    m.Equation(sum(b) <= system.B)
-
-    # Objective: minimize social cost
-    # Social cost = sum of offloading costs + sum of local costs for non-offloaders
-    offload_cost = sum(
-        o[i] * (data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i])
-        for i in range(n)
-    )
-    local_cost_sum = sum((1 - o[i]) * data.cl[i] for i in range(n))
-    m.Obj(offload_cost + local_cost_sum)
-
-    # Solve
+    warm_set: tuple[int, ...] = tuple()
+    warm_f = np.zeros(n, dtype=float)
+    warm_b = np.zeros(n, dtype=float)
     try:
-        m.solve(disp=False, debug=0)
-        success = True
+        warm = algorithm_2_heuristic_user_selection(users, pE, pN, system, stack_cfg)
+        warm_set = warm.offloading_set
+        warm_f = np.asarray(warm.inner_result.f, dtype=float)
+        warm_b = np.asarray(warm.inner_result.b, dtype=float)
     except Exception:
-        # Solver failed, try with relaxed options
-        try:
-            m.solver_options = [
-                'max_time 30',
-                'minlp_maximum_iterations 100',
-                'minlp_as_nlp 0',
-            ]
-            m.solve(disp=False, debug=0)
-            success = True
-        except Exception:
-            success = False
+        pass
+    warm_lookup = set(warm_set)
 
-    # Extract solution with robust error handling
-    def _extract_value(var):
-        """Safely extract value from GEKKO variable."""
+    def _extract_value(var: object) -> float:
         try:
-            if var.value is None:
+            value = getattr(var, "value", None)
+            if value is None:
                 return 0.0
-            # Handle different value types
-            if isinstance(var.value, (list, np.ndarray)):
-                return float(var.value[0]) if len(var.value) > 0 else 0.0
-            return float(var.value)
+            if isinstance(value, (list, np.ndarray)):
+                return float(value[0]) if len(value) > 0 else 0.0
+            return float(value)
         except Exception:
             return 0.0
 
-    f_vals = np.array([_extract_value(f_i) for f_i in f])
-    b_vals = np.array([_extract_value(b_i) for b_i in b])
+    def _set_initial_values(mode: str, o: list, f: list, b: list, f_inv: list, b_inv: list) -> None:
+        if mode == "warm":
+            for i in range(n):
+                is_off = 1.0 if i in warm_lookup else 0.0
+                fi = float(np.clip(warm_f[i], 0.0, system.F)) if is_off > 0 else 0.0
+                bi = float(np.clip(warm_b[i], 0.0, system.B)) if is_off > 0 else 0.0
+                o[i].value = is_off
+                f[i].value = fi
+                b[i].value = bi
+                f_inv[i].value = (1.0 / max(fi, eps)) if is_off > 0 else 0.0
+                b_inv[i].value = (1.0 / max(bi, eps)) if is_off > 0 else 0.0
+            return
 
-    # Extract offloading set from binary variables
-    def _extract_binary(var):
-        """Safely extract binary decision from GEKKO variable."""
+        if mode == "heuristic":
+            ce_star = 2.0 * np.sqrt(data.aw * max(pE, eps)) + 2.0 * np.sqrt(data.th * max(pN, eps))
+            off = ce_star < data.cl
+            f0 = np.zeros(n, dtype=float)
+            b0 = np.zeros(n, dtype=float)
+            idx = np.flatnonzero(off)
+            if idx.size:
+                f0[idx] = np.sqrt(data.aw[idx] / max(pE, eps))
+                b0[idx] = np.sqrt(data.th[idx] / max(pN, eps))
+                sf = float(np.sum(f0[idx]))
+                sb = float(np.sum(b0[idx]))
+                if sf > system.F and sf > 0.0:
+                    f0[idx] *= system.F / sf
+                if sb > system.B and sb > 0.0:
+                    b0[idx] *= system.B / sb
+            for i in range(n):
+                is_off = 1.0 if bool(off[i]) else 0.0
+                fi = float(f0[i]) if is_off > 0 else 0.0
+                bi = float(b0[i]) if is_off > 0 else 0.0
+                o[i].value = is_off
+                f[i].value = fi
+                b[i].value = bi
+                f_inv[i].value = (1.0 / max(fi, eps)) if is_off > 0 else 0.0
+                b_inv[i].value = (1.0 / max(bi, eps)) if is_off > 0 else 0.0
+            return
+
+        for i in range(n):
+            o[i].value = 0.0
+            f[i].value = 0.0
+            b[i].value = 0.0
+            f_inv[i].value = 0.0
+            b_inv[i].value = 0.0
+
+    def _run_attempt(init_mode: str) -> tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool]:
+        m = GEKKO(remote=False)
+        m.options.SOLVER = 1
+        m.options.IMODE = 3
+
+        o = [m.Var(integer=True, lb=0, ub=1, name=f"o_{i}") for i in range(n)]
+        f = [m.Var(lb=0, ub=system.F, name=f"f_{i}") for i in range(n)]
+        b = [m.Var(lb=0, ub=system.B, name=f"b_{i}") for i in range(n)]
+        f_inv = [m.Var(lb=0, name=f"f_inv_{i}") for i in range(n)]
+        b_inv = [m.Var(lb=0, name=f"b_inv_{i}") for i in range(n)]
+
+        for i in range(n):
+            m.Equation(f_inv[i] * (f[i] + eps) >= o[i])
+            m.Equation(b_inv[i] * (b[i] + eps) >= o[i])
+            m.Equation(f[i] <= system.F * o[i])
+            m.Equation(b[i] <= system.B * o[i])
+            m.Equation(f[i] >= eps * o[i])
+            m.Equation(b[i] >= eps * o[i])
+
+            m_cost_i = max(1.0, float(data.cl[i]))
+            ce_i = data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i]
+            m.Equation(ce_i <= data.cl[i] + m_cost_i * (1 - o[i]))
+
+        m.Equation(sum(f) <= system.F)
+        m.Equation(sum(b) <= system.B)
+
+        offload_cost = sum(
+            o[i] * (data.aw[i] * f_inv[i] + data.th[i] * b_inv[i] + pE * f[i] + pN * b[i])
+            for i in range(n)
+        )
+        local_cost_sum = sum((1 - o[i]) * data.cl[i] for i in range(n))
+        m.Obj(offload_cost + local_cost_sum)
+
+        _set_initial_values(init_mode, o, f, b, f_inv, b_inv)
+
         try:
-            val = _extract_value(var)
-            return val > 0.5
+            m.solver_options = [
+                f"max_time {max(10, int(base_cfg.gekko_time_limit // 2))}",
+                f"minlp_maximum_iterations {max(100, int(base_cfg.gekko_max_iter // 2))}",
+                "minlp_as_nlp 1",
+                f"minlp_gap_tol {base_cfg.gekko_mip_gap}",
+            ]
+            m.solve(disp=False, debug=0)
         except Exception:
-            return False
+            pass
 
-    offloading_set = tuple(
-        i for i in range(n)
-        if _extract_binary(o[i])
-    )
+        solved = False
+        try:
+            m.solver_options = [
+                f"max_time {base_cfg.gekko_time_limit}",
+                f"minlp_maximum_iterations {base_cfg.gekko_max_iter}",
+                "minlp_as_nlp 0",
+                "minlp_branch_method 1",
+                f"minlp_gap_tol {base_cfg.gekko_mip_gap}",
+            ]
+            m.solve(disp=False, debug=0)
+            solved = True
+        except Exception:
+            try:
+                m.solver_options = [
+                    f"max_time {base_cfg.gekko_time_limit}",
+                    f"minlp_maximum_iterations {base_cfg.gekko_max_iter}",
+                    "minlp_as_nlp 0",
+                    "minlp_branch_method 3",
+                    f"minlp_gap_tol {min(1e-2, max(base_cfg.gekko_mip_gap, 1e-3))}",
+                ]
+                m.solve(disp=False, debug=0)
+                solved = True
+            except Exception:
+                solved = False
 
-    # Calculate social cost from the extracted solution
-    data_obj = _build_data(users)
-    ce = _offload_costs(data_obj, f_vals, b_vals, pE, pN)
-    off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
-    loc_idx = np.asarray([i for i in range(n) if i not in set(offloading_set)], dtype=int)
-    social_cost = float(np.sum(ce[off_idx])) + (float(np.sum(data_obj.cl[loc_idx])) if loc_idx.size else 0.0)
+        f_vals = np.array([_extract_value(v) for v in f], dtype=float)
+        b_vals = np.array([_extract_value(v) for v in b], dtype=float)
+        o_raw = np.array([_extract_value(v) for v in o], dtype=float)
+        offloading_set = tuple(int(i) for i in np.flatnonzero(o_raw > 0.5))
 
-    return f_vals, b_vals, offloading_set, social_cost, success
+        ce = _offload_costs(data, f_vals, b_vals, pE, pN)
+        off_idx = np.asarray(offloading_set, dtype=int) if offloading_set else np.asarray([], dtype=int)
+        loc_idx = np.asarray([i for i in range(n) if i not in set(offloading_set)], dtype=int)
+        social = float(np.sum(ce[off_idx])) + (float(np.sum(data.cl[loc_idx])) if loc_idx.size else 0.0)
+
+        finite_ok = bool(np.all(np.isfinite(f_vals)) and np.all(np.isfinite(b_vals)) and np.isfinite(social))
+        cap_ok = bool(float(np.sum(f_vals)) <= system.F + cap_tol and float(np.sum(b_vals)) <= system.B + cap_tol)
+        integral_ok = bool(np.all((o_raw <= bin_tol) | (o_raw >= 1.0 - bin_tol)))
+        if off_idx.size:
+            ir_max = float(np.max(np.maximum(ce[off_idx] - data.cl[off_idx], 0.0)))
+        else:
+            ir_max = 0.0
+        ir_ok = ir_max <= ir_tol
+        objective_ok = social <= local_upper + 1e-4
+        success = solved and finite_ok and cap_ok and integral_ok and ir_ok and objective_ok
+        return f_vals, b_vals, offloading_set, social, success
+
+    init_modes = ["warm", "heuristic", "empty"] if warm_set else ["heuristic", "empty"]
+    best: tuple[np.ndarray, np.ndarray, tuple[int, ...], float, bool] | None = None
+    for mode in init_modes:
+        cand = _run_attempt(mode)
+        if not cand[4]:
+            continue
+        if best is None or cand[3] < best[3]:
+            best = cand
+
+    if best is not None:
+        return best
+    return np.zeros(n, dtype=float), np.zeros(n, dtype=float), tuple(), local_upper, False
 
 
 def _solve_centralized_minlp(
@@ -470,16 +740,17 @@ def _solve_centralized_minlp(
 
     # Solve with GEKKO
     f, b, offloading_set, social_cost, success = _solve_with_gekko(
-        users, pE, pN, system, base_cfg
+        users, pE, pN, system, stack_cfg, base_cfg
     )
 
     runtime = time.perf_counter() - start_time
 
     # Build outcome using existing helper
-    return _build_outcome_from_allocations(
+    return _build_outcome_from_solver_allocations(
         users,
         f,
         b,
+        offloading_set,
         pE,
         pN,
         system,
@@ -502,12 +773,7 @@ def _solve_centralized_enumeration(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Original enumeration-based solver."""
-    if users.n > base_cfg.exact_max_users:
-        raise ValueError(
-            f"Enumeration-based centralized solver only supports n_users <= {base_cfg.exact_max_users}. "
-            f"Use MINLP mode (cs_use_minlp=true) for larger problems."
-        )
+    """Enumeration-based centralized solver over all user subsets."""
 
     data = _build_data(users)
     best_set: tuple[int, ...] = tuple()
@@ -548,39 +814,9 @@ def baseline_stage2_centralized_solver(
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
     """
-    Solve Stage II using centralized optimization.
-
-    By default, uses MINLP (GEKKO + APOPT) for direct formulation.
-    Falls back to enumeration for small n or if MINLP fails.
+    Solve Stage II using exhaustive enumeration over all user sets.
     """
-    import warnings
-
-    use_minlp = base_cfg.cs_use_minlp
-
-    # Check if MINLP is viable
-    if use_minlp:
-        if not _check_gekko_available():
-            warnings.warn("GEKKO solver not found, falling back to enumeration.")
-            use_minlp = False
-
-    if use_minlp:
-        try:
-            outcome = _solve_centralized_minlp(users, pE, pN, system, stack_cfg, base_cfg)
-            # Check if solution was successful
-            if outcome.meta.get("success", True):
-                return outcome
-            # If MINLP failed and fallback is enabled
-            if base_cfg.cs_fallback_to_enum and users.n <= base_cfg.exact_max_users:
-                warnings.warn("MINLP did not find optimal solution, falling back to enumeration.")
-                return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
-            return outcome
-        except Exception as e:
-            if base_cfg.cs_fallback_to_enum and users.n <= base_cfg.exact_max_users:
-                warnings.warn(f"MINLP solver error: {e}. Falling back to enumeration.")
-                return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
-            raise
-    else:
-        return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
+    return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
 
 
 def baseline_stage2_ubrd(
@@ -813,6 +1049,63 @@ def run_stage2_solver(
     return _stage2_solver(method, users, pE, pN, system, stack_cfg, base_cfg)
 
 
+def evaluate_stage1_price_grid(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    pE_min: float,
+    pE_max: float,
+    pN_min: float,
+    pN_max: float,
+    pE_points: int,
+    pN_points: int,
+    stage2_method: str | None = None,
+    progress_cb: Callable[[int, int, float, float], None] | None = None,
+) -> Stage1GridEvaluation:
+    if pE_points < 2 or pN_points < 2:
+        raise ValueError("pE_points and pN_points must be at least 2.")
+    if pE_max <= pE_min or pN_max <= pN_min:
+        raise ValueError("Price upper bounds must be greater than lower bounds.")
+
+    method = stage2_method or base_cfg.stage2_solver_for_pricing
+    pE_grid = np.linspace(float(pE_min), float(pE_max), int(pE_points))
+    pN_grid = np.linspace(float(pN_min), float(pN_max), int(pN_points))
+
+    outcomes: list[list[BaselineOutcome]] = []
+    esp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
+    nsp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
+    total_points = pN_grid.size * pE_grid.size
+    done_points = 0
+
+    for j, pN in enumerate(pN_grid):
+        row: list[BaselineOutcome] = []
+        for i, pE in enumerate(pE_grid):
+            out = _stage2_solver(method, users, float(pE), float(pN), system, stack_cfg, base_cfg)
+            row.append(out)
+            esp_rev[j, i] = out.esp_revenue
+            nsp_rev[j, i] = out.nsp_revenue
+            done_points += 1
+            if progress_cb is not None:
+                progress_cb(done_points, total_points, float(pE), float(pN))
+        outcomes.append(row)
+
+    esp_max_per_pN = np.max(esp_rev, axis=1, keepdims=True)
+    nsp_max_per_pE = np.max(nsp_rev, axis=0, keepdims=True)
+    eps_E = esp_max_per_pN - esp_rev
+    eps_N = nsp_max_per_pE - nsp_rev
+    eps = np.maximum(eps_E, eps_N)
+
+    return Stage1GridEvaluation(
+        pE_grid=pE_grid,
+        pN_grid=pN_grid,
+        outcomes=outcomes,
+        esp_rev=esp_rev,
+        nsp_rev=nsp_rev,
+        eps=eps,
+    )
+
+
 def baseline_stage1_grid_search_oracle(
     users: UserBatch,
     system: SystemConfig,
@@ -826,45 +1119,23 @@ def baseline_stage1_grid_search_oracle(
       eps_N(i,j) = max_{j'} R_N(i,j') - R_N(i,j)
       eps(i,j)   = max(eps_E(i,j), eps_N(i,j))
 
-    Choose grid point with minimum eps(i,j); tie-break by higher joint revenue,
-    then lower social cost.
+    Choose grid point with minimum eps(i,j) only.
     """
-    pE_grid = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.gso_grid_points)
-    pN_grid = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.gso_grid_points)
-
-    outcomes: list[list[BaselineOutcome]] = []
-    esp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
-    nsp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
-
-    for j, pN in enumerate(pN_grid):
-        row: list[BaselineOutcome] = []
-        for i, pE in enumerate(pE_grid):
-            out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, float(pE), float(pN), system, stack_cfg, base_cfg)
-            row.append(out)
-            esp_rev[j, i] = out.esp_revenue
-            nsp_rev[j, i] = out.nsp_revenue
-        outcomes.append(row)
-
-    esp_max_per_pN = np.max(esp_rev, axis=1, keepdims=True)
-    nsp_max_per_pE = np.max(nsp_rev, axis=0, keepdims=True)
-    eps_E = esp_max_per_pN - esp_rev
-    eps_N = nsp_max_per_pE - nsp_rev
-    eps = np.maximum(eps_E, eps_N)
-
-    best_idx: tuple[int, int] | None = None
-    best_score: tuple[float, float, float] | None = None
-    for j in range(pN_grid.size):
-        for i in range(pE_grid.size):
-            out = outcomes[j][i]
-            # Minimize eps first; tie-break by higher joint revenue, then lower social cost
-            score = (-float(eps[j, i]), float(out.esp_revenue + out.nsp_revenue), -float(out.social_cost))
-            if best_score is None or score > best_score:
-                best_score = score
-                best_idx = (j, i)
-
-    assert best_idx is not None
-    bj, bi = best_idx
-    best = outcomes[bj][bi]
+    grid = evaluate_stage1_price_grid(
+        users=users,
+        system=system,
+        stack_cfg=stack_cfg,
+        base_cfg=base_cfg,
+        pE_min=system.cE,
+        pE_max=base_cfg.max_price_E,
+        pN_min=system.cN,
+        pN_max=base_cfg.max_price_N,
+        pE_points=base_cfg.gso_grid_points,
+        pN_points=base_cfg.gso_grid_points,
+        stage2_method=base_cfg.stage2_solver_for_pricing,
+    )
+    bj, bi = np.unravel_index(int(np.argmin(grid.eps)), grid.eps.shape)
+    best = grid.outcomes[bj][bi]
     return BaselineOutcome(
         name="GSO",
         price=best.price,
@@ -872,10 +1143,133 @@ def baseline_stage1_grid_search_oracle(
         social_cost=best.social_cost,
         esp_revenue=best.esp_revenue,
         nsp_revenue=best.nsp_revenue,
-        epsilon_proxy=float(eps[bj, bi]),
+        epsilon_proxy=float(grid.eps[bj, bi]),
         meta={
             "grid_points": base_cfg.gso_grid_points,
             "oracle_eps_definition": "real_revenue_deviation_gap",
+            "selection_rule": "min_eps_only",
+        },
+    )
+
+
+def build_discrete_best_response_maps(
+    esp_rev: np.ndarray,
+    nsp_rev: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if esp_rev.ndim != 2 or nsp_rev.ndim != 2 or esp_rev.shape != nsp_rev.shape:
+        raise ValueError("esp_rev and nsp_rev must be 2D arrays with the same shape.")
+    br_esp_idx_per_pN = np.argmax(esp_rev, axis=1).astype(int)  # row-wise best pE index
+    br_nsp_idx_per_pE = np.argmax(nsp_rev, axis=0).astype(int)  # col-wise best pN index
+    return br_esp_idx_per_pN, br_nsp_idx_per_pE
+
+
+def run_discrete_br_dynamics(
+    esp_rev: np.ndarray,
+    nsp_rev: np.ndarray,
+    start_idx: tuple[int, int],
+    max_iters: int,
+    mode: str = "alternating",
+) -> list[tuple[int, int]]:
+    if max_iters <= 0:
+        raise ValueError("max_iters must be positive.")
+    if mode not in {"alternating", "greedy"}:
+        raise ValueError("mode must be 'alternating' or 'greedy'.")
+
+    br_esp_idx_per_pN, br_nsp_idx_per_pE = build_discrete_best_response_maps(esp_rev, nsp_rev)
+    n_rows, n_cols = esp_rev.shape
+    j, i = int(start_idx[0]), int(start_idx[1])
+    if not (0 <= j < n_rows and 0 <= i < n_cols):
+        raise ValueError("start_idx out of grid range.")
+
+    trajectory: list[tuple[int, int]] = [(j, i)]
+    for _ in range(max_iters):
+        if mode == "alternating":
+            changed = False
+            i_next = int(br_esp_idx_per_pN[j])
+            if i_next != i:
+                i = i_next
+                trajectory.append((j, i))
+                changed = True
+            j_next = int(br_nsp_idx_per_pE[i])
+            if j_next != j:
+                j = j_next
+                trajectory.append((j, i))
+                changed = True
+            if not changed:
+                break
+            continue
+
+        # greedy mode: choose the provider with larger one-step BR improvement.
+        i_cand = int(br_esp_idx_per_pN[j])
+        j_cand = int(br_nsp_idx_per_pE[i])
+        delta_e = float(esp_rev[j, i_cand] - esp_rev[j, i])
+        delta_n = float(nsp_rev[j_cand, i] - nsp_rev[j, i])
+        if delta_e <= 1e-12 and delta_n <= 1e-12:
+            break
+        if delta_e >= delta_n and i_cand != i:
+            i = i_cand
+            trajectory.append((j, i))
+        elif j_cand != j:
+            j = j_cand
+            trajectory.append((j, i))
+        else:
+            break
+
+    return trajectory
+
+
+def baseline_stage1_pbdr_discrete_br_map(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    mode: str = "alternating",
+) -> BaselineOutcome:
+    """
+    Stage-I PBDR on a discrete BR map:
+    1) Build one revenue heatmap grid.
+    2) Compute discrete true BR maps for ESP/NSP from that grid.
+    3) Run alternating/greedy BR dynamics on the BR map.
+    """
+    grid = evaluate_stage1_price_grid(
+        users=users,
+        system=system,
+        stack_cfg=stack_cfg,
+        base_cfg=base_cfg,
+        pE_min=system.cE,
+        pE_max=base_cfg.max_price_E,
+        pN_min=system.cN,
+        pN_max=base_cfg.max_price_N,
+        pE_points=base_cfg.pbdr_grid_points,
+        pN_points=base_cfg.pbdr_grid_points,
+        stage2_method=base_cfg.stage2_solver_for_pricing,
+    )
+    start_pE = max(system.cE, stack_cfg.initial_pE)
+    start_pN = max(system.cN, stack_cfg.initial_pN)
+    start_i = int(np.argmin(np.abs(grid.pE_grid - start_pE)))
+    start_j = int(np.argmin(np.abs(grid.pN_grid - start_pN)))
+    traj = run_discrete_br_dynamics(
+        grid.esp_rev,
+        grid.nsp_rev,
+        start_idx=(start_j, start_i),
+        max_iters=base_cfg.pbdr_max_iters,
+        mode=mode,
+    )
+    end_j, end_i = traj[-1]
+    out = grid.outcomes[end_j][end_i]
+    return BaselineOutcome(
+        name="PBRD_DISCRETE",
+        price=out.price,
+        offloading_set=out.offloading_set,
+        social_cost=out.social_cost,
+        esp_revenue=out.esp_revenue,
+        nsp_revenue=out.nsp_revenue,
+        epsilon_proxy=float(grid.eps[end_j, end_i]),
+        meta={
+            "mode": mode,
+            "trajectory_len": len(traj),
+            "max_iters": base_cfg.pbdr_max_iters,
+            "grid_points": base_cfg.pbdr_grid_points,
         },
     )
 
@@ -913,11 +1307,13 @@ def baseline_stage1_pbdr(
 ) -> BaselineOutcome:
     pE = max(system.cE, stack_cfg.initial_pE)
     pN = max(system.cN, stack_cfg.initial_pN)
-    last = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+    actual_iters = 0
     for t in range(base_cfg.pbdr_max_iters):
+        prev_pE, prev_pN = pE, pN
         pE, _ = _best_response_1d("E", users, pN, system, stack_cfg, base_cfg)
-        pN, last = _best_response_1d("N", users, pE, system, stack_cfg, base_cfg)
-        if t > 0 and abs(pE - last.price[0]) + abs(pN - last.price[1]) <= base_cfg.pbdr_tol:
+        pN, _ = _best_response_1d("N", users, pE, system, stack_cfg, base_cfg)
+        actual_iters = t + 1
+        if abs(pE - prev_pE) + abs(pN - prev_pN) <= base_cfg.pbdr_tol:
             break
     out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
     return BaselineOutcome(
@@ -928,7 +1324,7 @@ def baseline_stage1_pbdr(
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
         epsilon_proxy=out.epsilon_proxy,
-        meta={"iters": base_cfg.pbdr_max_iters},
+        meta={"iters": actual_iters, "grid_points": base_cfg.pbdr_grid_points},
     )
 
 
@@ -1126,7 +1522,7 @@ def baseline_single_sp(
     3. User i is indifferent: offload_cost + price = local_cost
     4. SP extracts all user surplus as utility
 
-    SP Utility = Σ_{i∈X} (cl_i - ce_i) - operational_cost
+    SP Utility = 危_{i鈭圶} (cl_i - ce_i) - operational_cost
     """
     data = _build_data(users)
     off: set[int] = set()
@@ -1276,3 +1672,4 @@ def run_all_baselines(
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_random_offloading(users, system, stack_cfg, base_cfg))
     return outcomes
+

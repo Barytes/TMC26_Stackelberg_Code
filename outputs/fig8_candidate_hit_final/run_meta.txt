@@ -1,7 +1,0 @@
-timestamp_utc = 2026-03-08T16:00:30.873974+00:00
-config = configs/default.toml
-n_users = [6, 8]
-trials = 1
-seed = 20260004
-total_samples = 4
-overall_hit_rate = 100.00%

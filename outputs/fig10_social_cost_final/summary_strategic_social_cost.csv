@@ -1,5 +1,0 @@
-n_users,method,social_cost_mean,social_cost_std,count
-20,GSSE,507.733970069066,0.0,1
-20,MarketEquilibrium,354.64792366958955,0.0,1
-20,RandomOffloading,622.2176996191886,0.0,1
-20,SingleSP,313.5137110936571,0.0,1
