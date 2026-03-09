@@ -1,0 +1,8 @@
+FAST SPEC generation started at Sun Mar  8 11:50:51 PM CST 2026
+\n=== RUN fig3 Sun Mar  8 11:50:51 PM CST 2026 ===
+Done. Results written to: outputs/stage2_communication_rounds_20260308_235052
+=== EXIT fig3 code=0 Sun Mar  8 11:51:52 PM CST 2026 ===
+\n=== RUN fig4 Sun Mar  8 11:51:52 PM CST 2026 ===
+Done. Results written to: outputs/stage2_exploitability_comparison_20260308_235153
+=== EXIT fig4 code=0 Sun Mar  8 11:51:56 PM CST 2026 ===
+\n=== RUN fig5 Sun Mar  8 11:51:56 PM CST 2026 ===

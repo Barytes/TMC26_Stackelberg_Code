@@ -1,0 +1,11 @@
+SPEC resume run started at Sun Mar  8 11:38:52 PM CST 2026
+\n=== RUN fig3 Sun Mar  8 11:38:52 PM CST 2026 ===
+Done. Results written to: outputs/stage2_communication_rounds_20260308_233854
+=== DONE fig3 Sun Mar  8 11:40:19 PM CST 2026 ===
+\n=== RUN fig4 Sun Mar  8 11:40:19 PM CST 2026 ===
+Traceback (most recent call last):
+  File "/home/ubuntu/.openclaw/workspace/TMC26_Stackelberg_Code/scripts/run_stage2_exploitability_comparison.py", line 430, in <module>
+    main()
+  File "/home/ubuntu/.openclaw/workspace/TMC26_Stackelberg_Code/scripts/run_stage2_exploitability_comparison.py", line 367, in main
+    from tmc26_exp.baselines import Stage2Outcome
+ImportError: cannot import name 'Stage2Outcome' from 'tmc26_exp.baselines' (/home/ubuntu/.openclaw/workspace/TMC26_Stackelberg_Code/src/tmc26_exp/baselines.py)

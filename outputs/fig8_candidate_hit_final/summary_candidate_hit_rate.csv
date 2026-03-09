@@ -1,0 +1,5 @@
+n_users,provider,hit_rate_mean,hit_rate_std,candidate_count_mean,count
+6,E,100.0,0.0,16.0,1
+6,N,100.0,0.0,16.0,1
+8,E,100.0,0.0,24.0,1
+8,N,100.0,0.0,24.0,1

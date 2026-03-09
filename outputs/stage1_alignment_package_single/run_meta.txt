@@ -1,0 +1,5 @@
+config=configs/stage1_fast_diag.toml
+seed=20260002
+n_users=20
+true_se=(6,1.807)
+strict_mode=single_config_single_seed_single_instance

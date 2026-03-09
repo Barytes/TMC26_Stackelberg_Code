@@ -819,20 +819,52 @@ def baseline_stage1_grid_search_oracle(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """Grid-search SE proxy using *real-revenue deviation gap* definition.
+
+    Definition aligned with plotting scripts:
+      eps_E(i,j) = max_{i'} R_E(i',j) - R_E(i,j)
+      eps_N(i,j) = max_{j'} R_N(i,j') - R_N(i,j)
+      eps(i,j)   = max(eps_E(i,j), eps_N(i,j))
+
+    Choose grid point with minimum eps(i,j); tie-break by higher joint revenue,
+    then lower social cost.
+    """
     pE_grid = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.gso_grid_points)
     pN_grid = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.gso_grid_points)
-    best: BaselineOutcome | None = None
-    for pE in pE_grid:
-        for pN in pN_grid:
+
+    outcomes: list[list[BaselineOutcome]] = []
+    esp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
+    nsp_rev = np.zeros((pN_grid.size, pE_grid.size), dtype=float)
+
+    for j, pN in enumerate(pN_grid):
+        row: list[BaselineOutcome] = []
+        for i, pE in enumerate(pE_grid):
             out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, float(pE), float(pN), system, stack_cfg, base_cfg)
-            score = (-out.epsilon_proxy, out.esp_revenue + out.nsp_revenue, -out.social_cost)
-            if best is None:
-                best = out
+            row.append(out)
+            esp_rev[j, i] = out.esp_revenue
+            nsp_rev[j, i] = out.nsp_revenue
+        outcomes.append(row)
+
+    esp_max_per_pN = np.max(esp_rev, axis=1, keepdims=True)
+    nsp_max_per_pE = np.max(nsp_rev, axis=0, keepdims=True)
+    eps_E = esp_max_per_pN - esp_rev
+    eps_N = nsp_max_per_pE - nsp_rev
+    eps = np.maximum(eps_E, eps_N)
+
+    best_idx: tuple[int, int] | None = None
+    best_score: tuple[float, float, float] | None = None
+    for j in range(pN_grid.size):
+        for i in range(pE_grid.size):
+            out = outcomes[j][i]
+            # Minimize eps first; tie-break by higher joint revenue, then lower social cost
+            score = (-float(eps[j, i]), float(out.esp_revenue + out.nsp_revenue), -float(out.social_cost))
+            if best_score is None or score > best_score:
                 best_score = score
-            elif score > best_score:
-                best = out
-                best_score = score
-    assert best is not None
+                best_idx = (j, i)
+
+    assert best_idx is not None
+    bj, bi = best_idx
+    best = outcomes[bj][bi]
     return BaselineOutcome(
         name="GSO",
         price=best.price,
@@ -840,8 +872,11 @@ def baseline_stage1_grid_search_oracle(
         social_cost=best.social_cost,
         esp_revenue=best.esp_revenue,
         nsp_revenue=best.nsp_revenue,
-        epsilon_proxy=best.epsilon_proxy,
-        meta={"grid_points": base_cfg.gso_grid_points},
+        epsilon_proxy=float(eps[bj, bi]),
+        meta={
+            "grid_points": base_cfg.gso_grid_points,
+            "oracle_eps_definition": "real_revenue_deviation_gap",
+        },
     )
 
 

@@ -1,0 +1,8 @@
+timestamp_utc = 2026-03-08T15:51:52.119832+00:00
+config = configs/default.toml
+pE = 0.5
+pN = 0.5
+n_users = [50, 100, 200]
+trials = 1
+seed = 20263001
+metrics = outer_iterations, inner_iterations, total_rounds

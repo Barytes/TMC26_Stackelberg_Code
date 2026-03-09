@@ -1,0 +1,29 @@
+Real Revenue Contours (DG Solver)
+=================================
+
+Configuration:
+  Config file: configs/stage1_fig6_extdomain.toml
+  Output directory: outputs/real_revenue_contours_ext7
+  pE range: [0.05, 7.0], 48 points
+  pN range: [0.05, 7.0], 48 points
+  Trials: 1
+  Users per trial: 20
+  Seed: 2026
+  Parallel workers: 8
+
+Results:
+  ESP real revenue range: [0.000000, 69.844902]
+  NSP real revenue range: [0.000000, 84.733791]
+
+Files generated:
+  - esp_real_revenue.csv
+  - esp_real_revenue_heatmap.png
+  - esp_real_revenue_contour.png
+  - nsp_real_revenue.csv
+  - nsp_real_revenue_heatmap.png
+  - nsp_real_revenue_contour.png
+
+Note: These contours show REAL revenue computed using the DG (Algorithm 2 - Distributed Greedy)
+baseline for Stage II user responses. Unlike the "potential revenue" proxies in the
+default run, these values account for actual user offloading decisions and capacity
+constraints. The DG solver provides near-optimal solutions much faster than CS.

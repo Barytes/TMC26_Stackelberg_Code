@@ -1,0 +1,7 @@
+search_steps = 3
+outer_iterations = 3
+stage2_oracle_calls = 1
+evaluated_candidates = 157
+stopping_reason = no_improving_candidate
+epsilon_progression = [204.10152601401083, 0.20210829199753277, 0.0, 0.0]
+distance_to_se_progression = [0.48954478671678525, 5.3829084412398025, 5.3829084412398025, 5.3829084412398025]

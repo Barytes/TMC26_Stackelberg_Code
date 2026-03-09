@@ -1,0 +1,10 @@
+timestamp_utc = 2026-03-08T15:52:42.679580+00:00
+config = configs/default.toml
+pE = 0.5
+pN = 0.5
+n_users = [6, 8, 10]
+trials = 2
+seed = 20262001
+exact_max_users = 16
+formula_empirical = V_algorithm2 / V_optimal
+formula_theorem2 = (V(∅) - ΔĈ_{i*}) / (V(∅) - |X*|ΔĈ_{i*})

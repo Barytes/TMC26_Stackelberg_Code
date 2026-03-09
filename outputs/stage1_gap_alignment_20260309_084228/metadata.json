@@ -1,0 +1,52 @@
+{
+  "run_name": "stage1_gap_alignment_20260309_084228",
+  "seed": 20260309,
+  "n_users": 40,
+  "stage2_solver": "DG",
+  "grid_points": 21,
+  "pE_range": [
+    0.01,
+    6.0
+  ],
+  "pN_range": [
+    0.01,
+    6.0
+  ],
+  "unified_se_proxy": {
+    "i": 4,
+    "j": 5,
+    "pE": 1.208,
+    "pN": 1.5075,
+    "value": 0.0
+  },
+  "summary": [
+    {
+      "variant": "boundary",
+      "mae": 133.2543299095226,
+      "rmse": 157.64273453642699,
+      "max_abs_diff": 305.1474312445736,
+      "argmin_hat_pE": 6.0,
+      "argmin_hat_pN": 0.609,
+      "argmin_hat_value": 48.07202099853169,
+      "argmin_real_pE": 1.208,
+      "argmin_real_pN": 1.5075,
+      "argmin_real_value": 0.0,
+      "argmin_grid_distance": 16.278820596099706,
+      "argmin_price_distance": 4.875506768531862
+    },
+    {
+      "variant": "refined_price",
+      "mae": 285.10817893627495,
+      "rmse": 289.2277590570347,
+      "max_abs_diff": 393.78157794946105,
+      "argmin_hat_pE": 1.5075,
+      "argmin_hat_pN": 3.6039999999999996,
+      "argmin_hat_value": 217.47655782832732,
+      "argmin_real_pE": 1.208,
+      "argmin_real_pN": 1.5075,
+      "argmin_real_value": 0.0,
+      "argmin_grid_distance": 7.0710678118654755,
+      "argmin_price_distance": 2.1177848096537097
+    }
+  ]
+}

@@ -7,6 +7,7 @@ Computes on the same grid and same user instance:
 - epsilon_real(pE,pN) from real revenues (best unilateral improvement)
 
 Outputs heatmaps, delta maps, summaries, and a concise markdown report payload.
+Includes three estimator variants: boundary / refined_price / topk_real_reval.
 """
 
 from __future__ import annotations
@@ -177,6 +178,7 @@ def main() -> None:
     nsp_rev = np.zeros(shape, dtype=float)
     epsilon_hat_boundary = np.zeros(shape, dtype=float)
     epsilon_hat_refined = np.zeros(shape, dtype=float)
+    epsilon_hat_topk = np.zeros(shape, dtype=float)
 
     for j, pN in enumerate(pN_values):
         for i, pE in enumerate(pE_values):
@@ -232,6 +234,26 @@ def main() -> None:
             ).gain
             epsilon_hat_refined[j, i] = max(float(gE_r), float(gN_r))
 
+            gE_k = algorithm_3_gain_approximation(
+                users,
+                out.offloading_set,
+                float(pE),
+                float(pN),
+                "E",
+                cfg.system,
+                estimator_variant="topk_real_reval",
+            ).gain
+            gN_k = algorithm_3_gain_approximation(
+                users,
+                out.offloading_set,
+                float(pE),
+                float(pN),
+                "N",
+                cfg.system,
+                estimator_variant="topk_real_reval",
+            ).gain
+            epsilon_hat_topk[j, i] = max(float(gE_k), float(gN_k))
+
     eps_E_real = np.max(esp_rev, axis=1, keepdims=True) - esp_rev
     eps_N_real = np.max(nsp_rev, axis=0, keepdims=True) - nsp_rev
     epsilon_real = np.maximum(eps_E_real, eps_N_real)
@@ -239,6 +261,7 @@ def main() -> None:
     se_proxy = _argmin_point(epsilon_real, pE_values, pN_values)
     boundary_argmin = _argmin_point(epsilon_hat_boundary, pE_values, pN_values)
     refined_argmin = _argmin_point(epsilon_hat_refined, pE_values, pN_values)
+    topk_argmin = _argmin_point(epsilon_hat_topk, pE_values, pN_values)
 
     def summarize(e_hat: np.ndarray, variant_name: str, argmin_hat: dict[str, float | int]) -> dict[str, float | int | str]:
         diff = e_hat - epsilon_real
@@ -265,16 +288,20 @@ def main() -> None:
     summary_rows = [
         summarize(epsilon_hat_boundary, "boundary", boundary_argmin),
         summarize(epsilon_hat_refined, "refined_price", refined_argmin),
+        summarize(epsilon_hat_topk, "topk_real_reval", topk_argmin),
     ]
 
     _save_surface_csv(out_dir / "epsilon_real.csv", pE_values, pN_values, epsilon_real, "epsilon_real")
     _save_surface_csv(out_dir / "epsilon_hat_boundary.csv", pE_values, pN_values, epsilon_hat_boundary, "epsilon_hat_boundary")
     _save_surface_csv(out_dir / "epsilon_hat_refined_price.csv", pE_values, pN_values, epsilon_hat_refined, "epsilon_hat_refined_price")
+    _save_surface_csv(out_dir / "epsilon_hat_topk_real_reval.csv", pE_values, pN_values, epsilon_hat_topk, "epsilon_hat_topk_real_reval")
     _save_surface_csv(out_dir / "delta_boundary_minus_real.csv", pE_values, pN_values, epsilon_hat_boundary - epsilon_real, "delta_boundary_minus_real")
     _save_surface_csv(out_dir / "delta_refined_minus_real.csv", pE_values, pN_values, epsilon_hat_refined - epsilon_real, "delta_refined_minus_real")
+    _save_surface_csv(out_dir / "delta_topk_minus_real.csv", pE_values, pN_values, epsilon_hat_topk - epsilon_real, "delta_topk_minus_real")
 
     _plot_variant_bundle(out_dir, "boundary", pE_values, pN_values, epsilon_hat_boundary, epsilon_real, se_proxy, boundary_argmin)
     _plot_variant_bundle(out_dir, "refined_price", pE_values, pN_values, epsilon_hat_refined, epsilon_real, se_proxy, refined_argmin)
+    _plot_variant_bundle(out_dir, "topk_real_reval", pE_values, pN_values, epsilon_hat_topk, epsilon_real, se_proxy, topk_argmin)
 
     with (out_dir / "summary_metrics.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))

@@ -242,8 +242,19 @@ def plot_boundary_with_trajectory(
             out_of_domain.append(f"{name}=({pE:.3g},{pN:.3g})")
 
     if _inside_domain(true_se, pE_values, pN_values):
-        ax.scatter([true_se[0]], [true_se[1]], s=140, marker='X', c='#ff1744', edgecolors='black', linewidths=1.0,
-                   label='True SE (grid-search oracle)', zorder=13, clip_on=True)
+        ax.scatter([true_se[0]], [true_se[1]], s=220, marker='X', c='#ff1744', edgecolors='#ffeb3b', linewidths=1.8,
+                   label='True SE (grid-search oracle)', zorder=20, clip_on=True)
+        ax.annotate(
+            f"True SE ({true_se[0]:.2f}, {true_se[1]:.2f})",
+            xy=(true_se[0], true_se[1]),
+            xytext=(8, 10),
+            textcoords='offset points',
+            fontsize=8,
+            color='#ff1744',
+            bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='#ff1744', alpha=0.85),
+            arrowprops=dict(arrowstyle='->', color='#ff1744', lw=1.0),
+            zorder=21,
+        )
     else:
         out_of_domain.append(f"TrueSE=({true_se[0]:.3g},{true_se[1]:.3g})")
 

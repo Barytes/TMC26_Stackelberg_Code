@@ -1,0 +1,6 @@
+timestamp_utc = 2026-03-08T16:20:21.857392+00:00
+config = configs/default.toml
+n_users = [20]
+trials = 1
+seed = 20271001
+methods = GSSE, MarketEquilibrium, SingleSP, RandomOffloading

@@ -1,0 +1,5 @@
+trial,seed,n_users,method,social_cost,offloading_size
+0,20291001,20,GSSE,507.733970069066,0
+0,20291001,20,MarketEquilibrium,354.64792366958955,10
+0,20291001,20,SingleSP,313.5137110936571,9
+0,20291001,20,RandomOffloading,622.2176996191886,15

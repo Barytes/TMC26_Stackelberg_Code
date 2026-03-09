@@ -1,0 +1,11 @@
+true_se_price = (6.0, 1.807)
+variant_a_steps = 2
+variant_a_final_price = (1.2776924492962702, 11.466801490584585)
+variant_a_final_epsilon = 0.0
+variant_a_dist_to_true_se = 10.752299914015309
+variant_a_stopping_reason = no_improving_candidate
+variant_b_steps = 12
+variant_b_final_price = (1.6047032694463144, 4.9977162096157395)
+variant_b_final_epsilon = 581.9929169818538
+variant_b_dist_to_true_se = 5.431326106939312
+variant_b_stopping_reason = max_iters

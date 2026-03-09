@@ -1,0 +1,6 @@
+timestamp_utc = 2026-03-08T17:05:52.856411+00:00
+config = configs/default.toml
+n_users = [20]
+trials = 3
+seed = 20260309
+metric = deviation gap (epsilon) per iteration from Algorithm 5 trajectory

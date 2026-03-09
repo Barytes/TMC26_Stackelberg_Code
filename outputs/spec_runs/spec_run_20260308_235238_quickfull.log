@@ -1,0 +1,14 @@
+quickfull started Sun Mar  8 11:52:38 PM CST 2026
+\n=== RUN fig1 Sun Mar  8 11:52:38 PM CST 2026 ===
+Done. Results written to: outputs/fig1_stage2_convergence_final
+=== EXIT fig1 code=0 Sun Mar  8 11:52:40 PM CST 2026 ===
+\n=== RUN fig2 Sun Mar  8 11:52:40 PM CST 2026 ===
+Done. Results written to: outputs/fig2_stage2_approx_ratio_final
+=== EXIT fig2 code=0 Sun Mar  8 11:52:42 PM CST 2026 ===
+\n=== RUN fig3 Sun Mar  8 11:52:42 PM CST 2026 ===
+Done. Results written to: outputs/fig3_stage2_comm_final
+=== EXIT fig3 code=0 Sun Mar  8 11:53:01 PM CST 2026 ===
+\n=== RUN fig4 Sun Mar  8 11:53:01 PM CST 2026 ===
+Done. Results written to: outputs/fig4_stage2_exploitability_final
+=== EXIT fig4 code=0 Sun Mar  8 11:53:04 PM CST 2026 ===
+\n=== RUN fig5 Sun Mar  8 11:53:04 PM CST 2026 ===

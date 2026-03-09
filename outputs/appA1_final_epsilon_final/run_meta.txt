@@ -1,0 +1,5 @@
+timestamp_utc = 2026-03-08T16:16:23.001968+00:00
+config = configs/default.toml
+n_users = [20]
+trials = 1
+seed = 20291001

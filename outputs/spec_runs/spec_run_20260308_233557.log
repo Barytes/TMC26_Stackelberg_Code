@@ -1,0 +1,8 @@
+SPEC figure generation started at Sun Mar  8 11:35:57 PM CST 2026
+\n=== RUN fig1 Sun Mar  8 11:35:57 PM CST 2026 ===
+Done. Results written to: outputs/stage2_convergence_20260308_233558
+=== DONE fig1 Sun Mar  8 11:36:05 PM CST 2026 ===
+\n=== RUN fig2 Sun Mar  8 11:36:05 PM CST 2026 ===
+Done. Results written to: outputs/stage2_approximation_ratio_20260308_233606
+=== DONE fig2 Sun Mar  8 11:38:21 PM CST 2026 ===
+\n=== RUN fig3 Sun Mar  8 11:38:21 PM CST 2026 ===
