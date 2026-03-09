@@ -62,6 +62,10 @@ class SearchStep:
     epsilon: float
     dist_to_se: float = float("nan")
     epsilon_delta: float = float("nan")
+    esp_best_set_size: int = 0
+    nsp_best_set_size: int = 0
+    esp_gain: float = float("nan")
+    nsp_gain: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -489,6 +493,7 @@ def algorithm_3_gain_approximation(
     provider: Provider,
     system: SystemConfig,
     estimator_variant: str = "boundary",
+    top_k: int = 4,
 ) -> GainApproxResult:
     data = _build_data(users)
     X = _sorted_tuple(current_set)
@@ -497,23 +502,50 @@ def algorithm_3_gain_approximation(
 
     best_gain = 0.0
     best_set = X
-    for Y in family:
-        candidate_revenue = _candidate_revenue_estimate(
-            data,
-            users,
-            Y,
-            pE,
-            pN,
-            provider,
-            system,
-            estimator_variant=estimator_variant,
-        )
-        if candidate_revenue is None:
-            continue
-        gain = candidate_revenue - current_revenue
-        if gain > best_gain:
-            best_gain = float(gain)
-            best_set = Y
+
+    if estimator_variant == "topk_real_reval":
+        # Two-stage estimator: rank by fast boundary estimate, then exact re-eval on Top-K.
+        scored: list[tuple[float, tuple[int, ...]]] = []
+        for Y in family:
+            s = _candidate_revenue_estimate(
+                data,
+                users,
+                Y,
+                pE,
+                pN,
+                provider,
+                system,
+                estimator_variant="boundary",
+            )
+            if s is None:
+                continue
+            scored.append((float(s), Y))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        top_k = max(1, min(int(top_k), len(scored)))
+        for _, Y in scored[:top_k]:
+            candidate_revenue = _provider_revenue(data, Y, pE, pN, provider, system)
+            gain = candidate_revenue - current_revenue
+            if gain > best_gain:
+                best_gain = float(gain)
+                best_set = Y
+    else:
+        for Y in family:
+            candidate_revenue = _candidate_revenue_estimate(
+                data,
+                users,
+                Y,
+                pE,
+                pN,
+                provider,
+                system,
+                estimator_variant=estimator_variant,
+            )
+            if candidate_revenue is None:
+                continue
+            gain = candidate_revenue - current_revenue
+            if gain > best_gain:
+                best_gain = float(gain)
+                best_set = Y
 
     return GainApproxResult(
         provider=provider,
@@ -1085,6 +1117,131 @@ def algorithm_5_stackelberg_guided_search(
     )
 
 
+def algorithm_topk_brd_stage1(
+    users: UserBatch,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+) -> StackelbergResult:
+    """Alternating top-k best-response dynamics over ESP/NSP prices."""
+    data = _build_data(users)
+    pE = max(cfg.initial_pE, system.cE)
+    pN = max(cfg.initial_pN, system.cN)
+    stopping_reason = "max_iters"
+    seen_keys: dict[tuple[float, float, tuple[int, ...]], int] = {}
+    cycle_hits = 0
+
+    trajectory: list[SearchStep] = []
+    prev_eps: float | None = None
+    current_set: tuple[int, ...] = tuple()
+
+    for t in range(cfg.search_max_iters):
+        gE = algorithm_3_gain_approximation(
+            users, current_set, pE, pN, "E", system,
+            estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+        )
+        next_set_E = gE.best_set if gE.gain > cfg.search_improvement_tol else current_set
+        brE = _boundary_price_for_provider(data, next_set_E, pN, "E", system)
+        pE_next = max(system.cE, float(brE)) if brE is not None else pE
+
+        gN = algorithm_3_gain_approximation(
+            users, next_set_E, pE_next, pN, "N", system,
+            estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+        )
+        next_set_N = gN.best_set if gN.gain > cfg.search_improvement_tol else next_set_E
+        brN = _boundary_price_for_provider(data, next_set_N, pE_next, "N", system)
+        pN_next = max(system.cN, float(brN)) if brN is not None else pN
+
+        gE_eval = algorithm_3_gain_approximation(
+            users, next_set_N, pE_next, pN_next, "E", system,
+            estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+        )
+        gN_eval = algorithm_3_gain_approximation(
+            users, next_set_N, pE_next, pN_next, "N", system,
+            estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+        )
+        eps = max(gE_eval.gain, gN_eval.gain)
+        eps_delta = float("nan") if prev_eps is None else (prev_eps - eps)
+        prev_eps = eps
+
+        trajectory.append(SearchStep(
+            iteration=t,
+            offloading_set=next_set_N,
+            pE=float(pE_next),
+            pN=float(pN_next),
+            epsilon=float(eps),
+            epsilon_delta=eps_delta,
+            esp_best_set_size=len(gE.best_set),
+            nsp_best_set_size=len(gN.best_set),
+            esp_gain=float(gE.gain),
+            nsp_gain=float(gN.gain),
+        ))
+
+        price_move = abs(pE_next - pE) + abs(pN_next - pN)
+        pE, pN = float(pE_next), float(pN_next)
+        current_set = next_set_N
+
+        key = (round(pE, 10), round(pN, 10), current_set)
+        if key in seen_keys:
+            cycle_hits += 1
+        seen_keys[key] = t
+
+        if price_move <= cfg.topk_brd_price_tol and abs(float(eps_delta)) <= cfg.topk_brd_epsilon_tol:
+            stopping_reason = "price_and_epsilon_converged"
+            break
+        if eps <= cfg.topk_brd_epsilon_tol:
+            stopping_reason = "epsilon_tolerance"
+            break
+        if cycle_hits >= cfg.topk_brd_cycle_window:
+            stopping_reason = "cycle_safeguard"
+            break
+
+    final_gain_E = algorithm_3_gain_approximation(
+        users, current_set, pE, pN, "E", system,
+        estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+    )
+    final_gain_N = algorithm_3_gain_approximation(
+        users, current_set, pE, pN, "N", system,
+        estimator_variant="topk_real_reval", top_k=cfg.gain_topk_k,
+    )
+    final_eps = max(final_gain_E.gain, final_gain_N.gain)
+    final_inner = _solve_fixed_set_inner_exact(users, current_set, pE, pN, system)
+    if final_inner is None:
+        final_inner = algorithm_1_distributed_primal_dual(users, current_set, pE, pN, system, cfg)
+    outside = set(range(users.n)) - set(current_set)
+    social_cost = final_inner.offloading_objective + (float(np.sum(data.cl[list(outside)])) if outside else 0.0)
+
+    esp_rev = _provider_revenue(data, current_set, pE, pN, "E", system)
+    nsp_rev = _provider_revenue(data, current_set, pE, pN, "N", system)
+
+    return StackelbergResult(
+        price=(float(pE), float(pN)),
+        offloading_set=current_set,
+        epsilon=float(final_eps),
+        gain_E=final_gain_E,
+        gain_N=final_gain_N,
+        inner_result=final_inner,
+        social_cost=float(social_cost),
+        trajectory=tuple(trajectory),
+        outer_iterations=len(trajectory),
+        stage2_oracle_calls=0,
+        evaluated_candidates=len(trajectory) * 2,
+        evaluated_boundary_points=0,
+        esp_revenue=float(esp_rev),
+        nsp_revenue=float(nsp_rev),
+        stopping_reason=stopping_reason,
+    )
+
+
+def run_stage1_solver(
+    users: UserBatch,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+) -> StackelbergResult:
+    if cfg.stage1_solver_variant == "topk_brd":
+        return algorithm_topk_brd_stage1(users, system, cfg)
+    return algorithm_5_stackelberg_guided_search(users, system, cfg)
+
+
 def summarize_stackelberg_result(
     users: UserBatch,
     result: StackelbergResult,
@@ -1096,7 +1253,7 @@ def summarize_stackelberg_result(
     rev_E = _provider_revenue(data, result.offloading_set, pE, pN, "E", system)
     rev_N = _provider_revenue(data, result.offloading_set, pE, pN, "N", system)
     lines = [
-        "Stackelberg guided search result (Algorithm 5)",
+        "Stackelberg Stage-I result",
         f"price = ({pE:.10g}, {pN:.10g})",
         f"epsilon = {result.epsilon:.10g}",
         f"offloading_users = {len(result.offloading_set)}/{users.n} ({ratio:.2%})",

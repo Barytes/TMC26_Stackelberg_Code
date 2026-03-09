@@ -16,7 +16,7 @@ from .experiment_plan import (
 from .metrics import METRICS, get_metric
 from .plotting import plot_surface_contour, plot_surface_heatmap
 from .simulator import evaluate_metric_surface, sample_users
-from .stackelberg import algorithm_5_stackelberg_guided_search, summarize_stackelberg_result
+from .stackelberg import run_stage1_solver, summarize_stackelberg_result
 
 
 def main() -> None:
@@ -46,7 +46,7 @@ def main() -> None:
 
     if cfg.stackelberg.enabled:
         users = sample_users(cfg, np.random.default_rng(cfg.seed))
-        result = algorithm_5_stackelberg_guided_search(users, cfg.system, cfg.stackelberg)
+        result = run_stage1_solver(users, cfg.system, cfg.stackelberg)
         (run_dir / "stackelberg_summary.txt").write_text(
             summarize_stackelberg_result(users, result, cfg.system),
             encoding="utf-8",
@@ -103,10 +103,13 @@ def write_summary(cfg, metric_names: list[str], out_path: Path) -> None:
 
 
 def save_stackelberg_trajectory_csv(result, out_path: Path) -> None:
-    rows = ["iteration,pE,pN,epsilon,offloading_size"]
+    rows = [
+        "iteration,pE,pN,epsilon,offloading_size,epsilon_delta,esp_best_set_size,nsp_best_set_size,esp_gain,nsp_gain"
+    ]
     for step in result.trajectory:
         rows.append(
-            f"{step.iteration},{step.pE:.10g},{step.pN:.10g},{step.epsilon:.10g},{len(step.offloading_set)}"
+            f"{step.iteration},{step.pE:.10g},{step.pN:.10g},{step.epsilon:.10g},{len(step.offloading_set)},"
+            f"{step.epsilon_delta:.10g},{step.esp_best_set_size},{step.nsp_best_set_size},{step.esp_gain:.10g},{step.nsp_gain:.10g}"
         )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 

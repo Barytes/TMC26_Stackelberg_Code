@@ -1,0 +1,3 @@
+method,steps,final_epsilon,dist_to_se_proxy,runtime_sec,stop_reason,final_pE,final_pN
+algorithm5,5,0.0,2.770019360797596,5.599536355002783,no_improving_candidate,0.492455523322604,6.367970791394018
+topk_brd,2,0.0,2.436463174040374,0.5347332109813578,epsilon_tolerance,0.4565489326130121,6.036021671340999

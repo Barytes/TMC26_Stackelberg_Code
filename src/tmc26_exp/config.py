@@ -62,7 +62,12 @@ class StackelbergConfig:
     search_improvement_tol: float
     stage1_neighborhood_mode: Literal["two_stage", "full_search"]
     stage1_neighborhood_max_candidates: int
-    gain_estimator_variant: Literal["boundary", "refined_price"]
+    gain_estimator_variant: Literal["boundary", "refined_price", "topk_real_reval"]
+    gain_topk_k: int
+    stage1_solver_variant: Literal["algorithm5", "topk_brd"]
+    topk_brd_price_tol: float
+    topk_brd_epsilon_tol: float
+    topk_brd_cycle_window: int
 
 
 @dataclass(frozen=True)
@@ -191,6 +196,11 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         stage1_neighborhood_mode=str(raw.get("stage1_neighborhood_mode", "two_stage")).strip().lower(),
         stage1_neighborhood_max_candidates=int(raw.get("stage1_neighborhood_max_candidates", 256)),
         gain_estimator_variant=str(raw.get("gain_estimator_variant", "boundary")).strip().lower(),
+        gain_topk_k=int(raw.get("gain_topk_k", 4)),
+        stage1_solver_variant=str(raw.get("stage1_solver_variant", "algorithm5")).strip().lower(),
+        topk_brd_price_tol=float(raw.get("topk_brd_price_tol", 1e-6)),
+        topk_brd_epsilon_tol=float(raw.get("topk_brd_epsilon_tol", 1e-7)),
+        topk_brd_cycle_window=int(raw.get("topk_brd_cycle_window", 6)),
     )
     if cfg.initial_pE <= 0 or cfg.initial_pN <= 0:
         raise ValueError("Initial prices must be positive.")
@@ -208,8 +218,16 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         raise ValueError("stage1_neighborhood_mode must be 'two_stage' or 'full_search'.")
     if cfg.stage1_neighborhood_max_candidates <= 0:
         raise ValueError("stage1_neighborhood_max_candidates must be positive.")
-    if cfg.gain_estimator_variant not in {"boundary", "refined_price"}:
-        raise ValueError("gain_estimator_variant must be 'boundary' or 'refined_price'.")
+    if cfg.gain_estimator_variant not in {"boundary", "refined_price", "topk_real_reval"}:
+        raise ValueError("gain_estimator_variant must be 'boundary', 'refined_price', or 'topk_real_reval'.")
+    if cfg.gain_topk_k <= 0:
+        raise ValueError("gain_topk_k must be positive.")
+    if cfg.stage1_solver_variant not in {"algorithm5", "topk_brd"}:
+        raise ValueError("stage1_solver_variant must be 'algorithm5' or 'topk_brd'.")
+    if cfg.topk_brd_price_tol <= 0 or cfg.topk_brd_epsilon_tol <= 0:
+        raise ValueError("topk_brd tolerances must be positive.")
+    if cfg.topk_brd_cycle_window < 2:
+        raise ValueError("topk_brd_cycle_window must be at least 2.")
     return cfg
 
 
