@@ -1,0 +1,8 @@
+Boundary price overlays from p=(0.5,0.5)
+current_set_size = 18
+candidate_family_size = 1577
+esp_boundary_points_raw = 479
+nsp_boundary_points_raw = 479
+esp_boundary_points_unique = 463
+nsp_boundary_points_unique = 375
+output_dir = outputs\vbbr_overlays\vbbr_overlay_new_default_oracle1_20260309\boundary_price_overlays

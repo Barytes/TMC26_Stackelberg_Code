@@ -1,0 +1,21 @@
+config = configs/default.toml
+seed = 2026
+n_users = 20
+stage2_method = CS_GEKKO_MINLP
+pE_range = [0.0, 6.0], points = 100
+pN_range = [0.0, 6.0], points = 100
+eps_tol = 1e-12
+equilibrium_count = 10
+min_eps = 0
+argmin_pE = 3.636363636
+argmin_pN = 0.6060606061
+representative_pE = 3.636363636
+representative_pN = 0.6060606061
+representative_eps = 0
+representative_joint_revenue = 81.79410278
+centralized_success_points = 10000
+centralized_failed_points = 0
+centralized_success_rate = 1.000000
+gekko_time_limit = 10
+gekko_max_iter = 20
+gekko_mip_gap = 0.05

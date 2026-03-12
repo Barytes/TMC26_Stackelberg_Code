@@ -1,0 +1,68 @@
+config = configs/default.toml
+seed = 2026
+start_pE = 0.5
+start_pN = 0.5
+current_set_size = 18
+current_set = 6;11;13;15;16;31;38;45;48;51;64;65;67;70;77;81;90;97
+heatmap_source = csv:outputs\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+scan_pE_max = 19.1526013749764
+scan_pN_max = 34.06566795599802
+scan_pE_points = 801
+scan_pN_points = 1001
+root_tol = 1e-05
+match_tol = 0.04256958494499753
+elapsed_seconds = 147.380
+summary_hint_config = configs/default.toml
+
+[E]
+fixed_price = 0.5
+exact_count = 20
+old_raw_count = 479
+old_unique_count = 463
+hypothesis_count = 14
+old_coverage_count = 17
+old_coverage_ratio = 0.85000000
+old_nearest_mean_abs_error = 0.04335954
+old_nearest_max_abs_error = 0.49482713
+ordered_match_count = 14
+hypothesis_mean_abs_error = 5.19453123
+hypothesis_max_abs_error = 8.34400631
+
+[E]
+matched_0 = exact:1.38352020 hypothesis:1.47812725 abs_err:0.09460705
+matched_1 = exact:1.81845240 hypothesis:2.01145554 abs_err:0.19300314
+matched_2 = exact:1.93561671 hypothesis:3.16090793 abs_err:1.22529122
+matched_3 = exact:2.19973881 hypothesis:5.76333247 abs_err:3.56359366
+matched_4 = exact:2.61997873 hypothesis:6.94013389 abs_err:4.32015516
+old_nearest_0 = exact:1.38352020 nearest_old_abs_err:0.00376988
+old_nearest_1 = exact:1.81845240 nearest_old_abs_err:0.00291892
+old_nearest_2 = exact:1.93561671 nearest_old_abs_err:0.00323205
+old_nearest_3 = exact:2.19973881 nearest_old_abs_err:0.01454203
+old_nearest_4 = exact:2.61997873 nearest_old_abs_err:0.00485834
+
+[N]
+fixed_price = 0.5
+exact_count = 17
+old_raw_count = 479
+old_unique_count = 375
+hypothesis_count = 14
+old_coverage_count = 11
+old_coverage_ratio = 0.64705882
+old_nearest_mean_abs_error = 0.05367311
+old_nearest_max_abs_error = 0.36152228
+ordered_match_count = 14
+hypothesis_mean_abs_error = 4.35022853
+hypothesis_max_abs_error = 17.71035247
+
+[N]
+matched_0 = exact:4.86666584 hypothesis:4.51847534 abs_err:0.34819049
+matched_1 = exact:5.47766410 hypothesis:6.86423576 abs_err:1.38657166
+matched_2 = exact:6.09000928 hypothesis:7.91074077 abs_err:1.82073149
+matched_3 = exact:6.68645739 hypothesis:9.45841062 abs_err:2.77195322
+matched_4 = exact:6.95357322 hypothesis:9.56697438 abs_err:2.61340116
+old_nearest_0 = exact:4.86666584 nearest_old_abs_err:0.01543667
+old_nearest_1 = exact:5.47766410 nearest_old_abs_err:0.04246294
+old_nearest_2 = exact:6.09000928 nearest_old_abs_err:0.01326061
+old_nearest_3 = exact:6.68645739 nearest_old_abs_err:0.00826697
+old_nearest_4 = exact:6.95357322 nearest_old_abs_err:0.07426017
+

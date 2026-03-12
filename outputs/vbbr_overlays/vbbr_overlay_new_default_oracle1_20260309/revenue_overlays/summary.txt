@@ -1,0 +1,4 @@
+Created revenue overlays with trajectory
+trajectory_csv = outputs\vbbr_overlays\vbbr_overlay_new_default_oracle1_20260309\vbbr_trajectory.csv
+heatmap_csv = outputs\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+outputs = outputs\vbbr_overlays\vbbr_overlay_new_default_oracle1_20260309\revenue_overlays
