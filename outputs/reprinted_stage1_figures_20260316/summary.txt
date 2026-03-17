@@ -1,0 +1,11 @@
+csv = outputs\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+boundary_dir = outputs\boundary_price_overlays\_tmp_boundary_hypothesis_check
+config = configs/default.toml
+seed = 2026
+start_pE = 0.5
+start_pN = 0.5
+scan_pE_max = 19.152601375
+scan_pN_max = 34.065667956
+scan_pE_points = 801
+scan_pN_points = 1001
+notes = revenue heatmaps are redrawn without Stackelberg Equilibrium markers; slice figures are recomputed on the exact diagnostic slices and keep only Revenue and switching prices.
