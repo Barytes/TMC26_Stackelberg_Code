@@ -5,6 +5,8 @@ from pathlib import Path
 import time
 from datetime import datetime
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -126,12 +128,13 @@ def _write_grid_csv(
     esp_rev: np.ndarray,
     nsp_rev: np.ndarray,
     eps: np.ndarray,
+    eps_proxy: np.ndarray,
 ) -> None:
-    rows = ["pE,pN,esp_revenue,nsp_revenue,joint_revenue,eps"]
+    rows = ["pE,pN,esp_revenue,nsp_revenue,joint_revenue,eps,epsilon_proxy"]
     for j, pN in enumerate(pN_grid):
         for i, pE in enumerate(pE_grid):
             rows.append(
-                f"{float(pE):.10g},{float(pN):.10g},{float(esp_rev[j, i]):.10g},{float(nsp_rev[j, i]):.10g},{float(esp_rev[j, i] + nsp_rev[j, i]):.10g},{float(eps[j, i]):.10g}"
+                f"{float(pE):.10g},{float(pN):.10g},{float(esp_rev[j, i]):.10g},{float(nsp_rev[j, i]):.10g},{float(esp_rev[j, i] + nsp_rev[j, i]):.10g},{float(eps[j, i]):.10g},{float(eps_proxy[j, i]):.10g}"
             )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -226,6 +229,10 @@ def main() -> None:
         [[float(out.social_cost) for out in row] for row in grid.outcomes],
         dtype=float,
     )
+    eps_proxy = np.array(
+        [[float(out.epsilon_proxy) for out in row] for row in grid.outcomes],
+        dtype=float,
+    )
     eq_mask = grid.eps <= float(args.eps_tol)
     rep = _select_equilibrium_representative(eq_mask, grid.eps, joint_rev, social_cost)
 
@@ -273,6 +280,17 @@ def main() -> None:
         eq_mask=eq_mask,
         representative=rep,
     )
+    _plot_heatmap(
+        values=eps_proxy,
+        pE_grid=grid.pE_grid,
+        pN_grid=grid.pN_grid,
+        title="Epsilon Proxy Heatmap",
+        cbar_label="epsilon_proxy",
+        out_path=out_dir / "eps_proxy_heatmap.png",
+        cmap="inferno",
+        eq_mask=eq_mask,
+        representative=rep,
+    )
     _write_grid_csv(
         out_path=out_dir / "price_grid_metrics.csv",
         pE_grid=grid.pE_grid,
@@ -280,6 +298,7 @@ def main() -> None:
         esp_rev=grid.esp_rev,
         nsp_rev=grid.nsp_rev,
         eps=grid.eps,
+        eps_proxy=eps_proxy,
     )
 
     min_j, min_i = np.unravel_index(int(np.argmin(grid.eps)), grid.eps.shape)
@@ -297,6 +316,7 @@ def main() -> None:
         f"representative_pE = {float(grid.pE_grid[rep[1]]):.10g}",
         f"representative_pN = {float(grid.pN_grid[rep[0]]):.10g}",
         f"representative_eps = {float(grid.eps[rep[0], rep[1]]):.10g}",
+        f"representative_eps_proxy = {float(eps_proxy[rep[0], rep[1]]):.10g}",
         f"representative_joint_revenue = {float(joint_rev[rep[0], rep[1]]):.10g}",
     ]
     (out_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")

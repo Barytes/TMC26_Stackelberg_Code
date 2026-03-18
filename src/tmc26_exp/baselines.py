@@ -1281,22 +1281,373 @@ def _best_response_1d(
     system: SystemConfig,
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome] | None = None,
 ) -> tuple[float, BaselineOutcome]:
+    def cached_stage2(pE: float, pN: float) -> BaselineOutcome:
+        key = _price_cache_key(pE, pN)
+        if stage2_cache is not None and key in stage2_cache:
+            return stage2_cache[key]
+        out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+        if stage2_cache is not None:
+            stage2_cache[key] = out
+        return out
+
     if provider == "E":
         grid = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.pbdr_grid_points)
-        outs = [
-            _stage2_solver(base_cfg.stage2_solver_for_pricing, users, float(pE), fixed_price, system, stack_cfg, base_cfg)
-            for pE in grid
-        ]
+        outs = [cached_stage2(float(pE), fixed_price) for pE in grid]
         best = max(outs, key=lambda o: o.esp_revenue)
         return best.price[0], best
     grid = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.pbdr_grid_points)
-    outs = [
-        _stage2_solver(base_cfg.stage2_solver_for_pricing, users, fixed_price, float(pN), system, stack_cfg, base_cfg)
-        for pN in grid
-    ]
+    outs = [cached_stage2(fixed_price, float(pN)) for pN in grid]
     best = max(outs, key=lambda o: o.nsp_revenue)
     return best.price[1], best
+
+
+def _solve_leader_mpec_explicit_kkt(
+    provider: str,
+    users: UserBatch,
+    own_price: float,
+    fixed_price: float,
+    offloading_set: tuple[int, ...],
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> tuple[float, BaselineOutcome]:
+    """Solve a restricted leader MPEC with explicit follower KKT/complementarity conditions."""
+    import pyomo.environ as pyo
+    from pyomo.opt import TerminationCondition
+
+    if provider not in {"E", "N"}:
+        raise ValueError("provider must be 'E' or 'N'.")
+
+    data = _build_data(users)
+    offloading_set = _sorted_tuple(offloading_set)
+    if not offloading_set:
+        if provider == "E":
+            pE = min(max(float(own_price), float(system.cE)), float(base_cfg.max_price_E))
+            pN = float(fixed_price)
+        else:
+            pE = float(fixed_price)
+            pN = min(max(float(own_price), float(system.cN)), float(base_cfg.max_price_N))
+        out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+        return (float(out.price[0] if provider == "E" else out.price[1]), out)
+
+    idx = np.asarray(offloading_set, dtype=int)
+    aw = data.aw[idx]
+    th = data.th[idx]
+    cl = data.cl[idx]
+
+    if provider == "E":
+        price_lb = float(system.cE)
+        price_ub = float(base_cfg.max_price_E)
+        fixed_other = float(fixed_price)
+        own_init = min(max(float(own_price), price_lb), price_ub)
+    else:
+        price_lb = float(system.cN)
+        price_ub = float(base_cfg.max_price_N)
+        fixed_other = float(fixed_price)
+        own_init = min(max(float(own_price), price_lb), price_ub)
+
+    m = pyo.ConcreteModel()
+    m.I = pyo.RangeSet(0, idx.size - 1)
+    m.f = pyo.Var(m.I, within=pyo.NonNegativeReals, bounds=(1e-8, float(system.F)))
+    m.b = pyo.Var(m.I, within=pyo.NonNegativeReals, bounds=(1e-8, float(system.B)))
+    m.mu = pyo.Var(m.I, within=pyo.NonNegativeReals)
+    m.lambda_F = pyo.Var(within=pyo.NonNegativeReals)
+    m.lambda_B = pyo.Var(within=pyo.NonNegativeReals)
+    m.p = pyo.Var(within=pyo.NonNegativeReals, bounds=(price_lb, price_ub))
+    m.p.set_value(own_init)
+    pE0 = own_init if provider == "E" else fixed_other
+    pN0 = fixed_other if provider == "E" else own_init
+    sE = float(np.sum(np.sqrt(np.maximum(aw, 1e-12))))
+    sN = float(np.sum(np.sqrt(np.maximum(th, 1e-12))))
+    tE0 = max(pE0, (sE / max(system.F, 1e-9)) ** 2 if idx.size else pE0)
+    tN0 = max(pN0, (sN / max(system.B, 1e-9)) ** 2 if idx.size else pN0)
+    m.lambda_F.set_value(max(0.0, tE0 - pE0))
+    m.lambda_B.set_value(max(0.0, tN0 - pN0))
+    f0 = np.sqrt(np.maximum(aw, 1e-12) / max(tE0, 1e-9))
+    b0 = np.sqrt(np.maximum(th, 1e-12) / max(tN0, 1e-9))
+    for loc in range(idx.size):
+        m.f[loc].set_value(float(np.clip(f0[loc], 1e-8, system.F)))
+        m.b[loc].set_value(float(np.clip(b0[loc], 1e-8, system.B)))
+        ce0 = aw[loc] / max(f0[loc], 1e-9) + th[loc] / max(b0[loc], 1e-9) + pE0 * f0[loc] + pN0 * b0[loc]
+        m.mu[loc].set_value(1e-3 if abs(ce0 - cl[loc]) <= 1e-4 else 0.0)
+
+    def _pE(mm):
+        return mm.p if provider == "E" else fixed_other
+
+    def _pN(mm):
+        return fixed_other if provider == "E" else mm.p
+
+    def _ce_expr(mm, i):
+        return float(aw[i]) / mm.f[i] + float(th[i]) / mm.b[i] + _pE(mm) * mm.f[i] + _pN(mm) * mm.b[i]
+
+    def _stationarity_f_rule(mm, i):
+        return (1.0 + mm.mu[i]) * (_pE(mm) - float(aw[i]) / (mm.f[i] * mm.f[i])) + mm.lambda_F == 0.0
+
+    def _stationarity_b_rule(mm, i):
+        return (1.0 + mm.mu[i]) * (_pN(mm) - float(th[i]) / (mm.b[i] * mm.b[i])) + mm.lambda_B == 0.0
+
+    def _ir_rule(mm, i):
+        return _ce_expr(mm, i) <= float(cl[i])
+
+    def _ir_comp_rule(mm, i):
+        return mm.mu[i] * (float(cl[i]) - _ce_expr(mm, i)) == 0.0
+
+    m.stationarity_f = pyo.Constraint(m.I, rule=_stationarity_f_rule)
+    m.stationarity_b = pyo.Constraint(m.I, rule=_stationarity_b_rule)
+    sum_f = sum(m.f[i] for i in m.I)
+    sum_b = sum(m.b[i] for i in m.I)
+    m.cap_f = pyo.Constraint(expr=sum_f <= float(system.F))
+    m.cap_b = pyo.Constraint(expr=sum_b <= float(system.B))
+    m.comp_f = pyo.Constraint(expr=m.lambda_F * (float(system.F) - sum_f) == 0.0)
+    m.comp_b = pyo.Constraint(expr=m.lambda_B * (float(system.B) - sum_b) == 0.0)
+    m.ir = pyo.Constraint(m.I, rule=_ir_rule)
+    m.comp_ir = pyo.Constraint(m.I, rule=_ir_comp_rule)
+
+    if provider == "E":
+        m.obj = pyo.Objective(expr=(m.p - float(system.cE)) * sum_f, sense=pyo.maximize)
+    else:
+        m.obj = pyo.Objective(expr=(m.p - float(system.cN)) * sum_b, sense=pyo.maximize)
+
+    solver = pyo.SolverFactory("ipopt")
+    if not solver.available(False):
+        raise RuntimeError("IPOPT is required for restricted follower-KKT MPEC solve but is not available.")
+    solver.options["tol"] = max(float(base_cfg.pbdr_tol), 1e-6)
+    solver.options["max_iter"] = max(300, int(base_cfg.gekko_max_iter))
+    solver.options["print_level"] = 0
+    results = solver.solve(m, tee=False)
+    tc = results.solver.termination_condition
+    solved = tc in {
+        TerminationCondition.optimal,
+        TerminationCondition.locallyOptimal,
+        TerminationCondition.feasible,
+    }
+    if not solved:
+        raise RuntimeError(
+            f"Restricted explicit KKT MPEC solve failed for provider {provider} on set size {idx.size}: termination={tc}"
+        )
+
+    if provider == "E":
+        pE = float(pyo.value(m.p))
+        pN = float(fixed_other)
+    else:
+        pE = float(fixed_other)
+        pN = float(pyo.value(m.p))
+
+    out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+    return (float(out.price[0] if provider == "E" else out.price[1]), out)
+
+
+def _solve_bilevel_stage2_oracle(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+) -> BaselineOutcome:
+    """Lower-level oracle for bilevel-MINLP leader search.
+
+    Search-time oracle prefers the explicit centralized MINLP follower solve and
+    only falls back to exact enumeration when the MINLP solve is unsuccessful
+    and the instance is still small enough for the exact oracle.
+    """
+
+    key = _price_cache_key(pE, pN)
+    if key in stage2_cache:
+        return stage2_cache[key]
+
+    out = _solve_centralized_minlp(users, pE, pN, system, stack_cfg, base_cfg)
+    success = bool(out.meta.get("success"))
+    if (not success) and bool(base_cfg.cs_fallback_to_enum) and users.n <= int(base_cfg.exact_max_users):
+        out = baseline_stage2_centralized_solver(users, pE, pN, system, stack_cfg, base_cfg)
+    stage2_cache[key] = out
+    return out
+
+
+def _solve_leader_bilevel_minlp(
+    provider: str,
+    users: UserBatch,
+    own_price: float,
+    fixed_price: float,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+) -> tuple[float, BaselineOutcome]:
+    """Solve a leader subproblem as a bilevel-MINLP with a full follower MINLP oracle."""
+    if provider not in {"E", "N"}:
+        raise ValueError("provider must be 'E' or 'N'.")
+
+    if provider == "E":
+        lb = float(system.cE)
+        ub = float(base_cfg.max_price_E)
+        reward_getter = lambda out: float(out.esp_revenue)
+
+        def eval_out(price: float) -> BaselineOutcome:
+            pE = round(min(max(float(price), lb), ub), 6)
+            return _solve_bilevel_stage2_oracle(users, pE, fixed_price, system, stack_cfg, base_cfg, stage2_cache)
+
+    else:
+        lb = float(system.cN)
+        ub = float(base_cfg.max_price_N)
+        reward_getter = lambda out: float(out.nsp_revenue)
+
+        def eval_out(price: float) -> BaselineOutcome:
+            pN = round(min(max(float(price), lb), ub), 6)
+            return _solve_bilevel_stage2_oracle(users, fixed_price, pN, system, stack_cfg, base_cfg, stage2_cache)
+
+    def objective(price: float) -> float:
+        return -reward_getter(eval_out(float(price)))
+
+    xatol = max(float(base_cfg.pbdr_tol), 1e-2)
+    maxiter = max(12, min(24, int(base_cfg.pbdr_max_iters) * 4))
+    res = minimize_scalar(
+        objective,
+        bounds=(lb, ub),
+        method="bounded",
+        options={"xatol": xatol, "maxiter": maxiter},
+    )
+
+    span = max(ub - lb, 1e-9)
+    local_delta = max(span / 100.0, 2.0 * xatol)
+    candidate_prices = [
+        lb,
+        ub,
+        min(max(float(own_price), lb), ub),
+        float(res.x) if getattr(res, "success", True) else min(max(float(own_price), lb), ub),
+        0.5 * (lb + ub),
+    ]
+    center = min(max(float(candidate_prices[-1]), lb), ub)
+    candidate_prices.extend(
+        [
+            min(max(center - local_delta, lb), ub),
+            center,
+            min(max(center + local_delta, lb), ub),
+        ]
+    )
+
+    best_out: BaselineOutcome | None = None
+    best_price = center
+    best_reward = -float("inf")
+    seen: set[float] = set()
+    for price in candidate_prices:
+        price = round(float(price), 12)
+        if price in seen:
+            continue
+        seen.add(price)
+        out = eval_out(price)
+        reward = reward_getter(out)
+        if reward > best_reward + 1e-12:
+            best_reward = reward
+            best_out = out
+            best_price = float(out.price[0] if provider == "E" else out.price[1])
+
+    assert best_out is not None
+    return best_price, best_out
+
+
+def run_stage1_epec_diagonalization(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    *,
+    outcome_name: str = "EPEC-DIAG",
+) -> tuple[BaselineOutcome, list[tuple[float, float]]]:
+    """Alternating diagonalization for the two-leader EPEC via bilevel-MINLP subproblems."""
+    pE = max(system.cE, stack_cfg.initial_pE)
+    pN = max(system.cN, stack_cfg.initial_pN)
+    trajectory: list[tuple[float, float]] = [(float(pE), float(pN))]
+    actual_iters = 0
+    converged = False
+    stage2_cache: dict[tuple[float, float], BaselineOutcome] = {}
+
+    for t in range(base_cfg.pbdr_max_iters):
+        prev_pE, prev_pN = pE, pN
+        pE_next, _ = _solve_leader_bilevel_minlp(
+            "E",
+            users,
+            pE,
+            pN,
+            system,
+            stack_cfg,
+            base_cfg,
+            stage2_cache,
+        )
+        pE = float(pE_next)
+        if abs(pE - prev_pE) > 1e-12:
+            trajectory.append((pE, float(pN)))
+
+        pN_next, _ = _solve_leader_bilevel_minlp(
+            "N",
+            users,
+            pN,
+            pE,
+            system,
+            stack_cfg,
+            base_cfg,
+            stage2_cache,
+        )
+        pN = float(pN_next)
+        if abs(pN - prev_pN) > 1e-12:
+            trajectory.append((float(pE), pN))
+
+        actual_iters = t + 1
+        if abs(pE - prev_pE) + abs(pN - prev_pN) <= base_cfg.pbdr_tol:
+            converged = True
+            break
+
+    final_key = _price_cache_key(pE, pN)
+    if final_key in stage2_cache:
+        out = stage2_cache[final_key]
+    else:
+        out = _solve_bilevel_stage2_oracle(users, pE, pN, system, stack_cfg, base_cfg, stage2_cache)
+        stage2_cache[final_key] = out
+    if users.n <= int(base_cfg.exact_max_users):
+        out = baseline_stage2_centralized_solver(users, pE, pN, system, stack_cfg, base_cfg)
+        stage2_cache[final_key] = out
+
+    return (
+        BaselineOutcome(
+            name=outcome_name,
+            price=out.price,
+            offloading_set=out.offloading_set,
+            social_cost=out.social_cost,
+            esp_revenue=out.esp_revenue,
+            nsp_revenue=out.nsp_revenue,
+            epsilon_proxy=out.epsilon_proxy,
+            meta={
+                "iters": actual_iters,
+                "converged": str(converged).lower(),
+                "grid_points": base_cfg.pbdr_grid_points,
+                "trajectory_len": len(trajectory),
+                "leader_subproblem": "bilevel_minlp",
+                "leader_subproblem_solver": "scipy_minimize_scalar_bounded",
+                "leader_subproblem_formulation": "upper_continuous_price_plus_lower_level_minlp",
+                "search_follower_oracle": "CS_MINLP_GEKKO_with_exact_enum_fallback",
+                "final_validation": (
+                    "CS_exact_enumeration"
+                    if users.n <= int(base_cfg.exact_max_users)
+                    else "CS_MINLP_GEKKO"
+                ),
+                "stage2_unique_prices": len(stage2_cache),
+            },
+        ),
+        trajectory,
+    )
+
+
+def baseline_stage1_epec_diagonalization(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    outcome, _ = run_stage1_epec_diagonalization(users, system, stack_cfg, base_cfg, outcome_name="EPEC-DIAG")
+    return outcome
 
 
 def baseline_stage1_pbdr(
@@ -1328,8 +1679,278 @@ def baseline_stage1_pbdr(
     )
 
 
-def _joint_objective(out: BaselineOutcome) -> float:
-    return out.esp_revenue + out.nsp_revenue - 0.01 * out.social_cost
+def _joint_action_q_greedy_action(
+    q_esp: np.ndarray,
+    q_nsp: np.ndarray,
+    tol: float = 1e-12,
+) -> tuple[int, int, bool]:
+    """Select a greedy joint action from two joint-action Q tables.
+
+    Preference order:
+    1. Any pure-Nash joint action under the current Q stage game.
+    2. Fallback to the joint action maximizing q_esp + q_nsp.
+    """
+    if q_esp.shape != q_nsp.shape:
+        raise ValueError("ESP/NSP Q tables must share the same shape.")
+    best_esp = np.max(q_esp, axis=0, keepdims=True)
+    best_nsp = np.max(q_nsp, axis=1, keepdims=True)
+    pure_nash_mask = (q_esp >= best_esp - tol) & (q_nsp >= best_nsp - tol)
+    if np.any(pure_nash_mask):
+        candidates = np.argwhere(pure_nash_mask)
+        scores = (q_esp + q_nsp)[pure_nash_mask]
+        pick = candidates[int(np.argmax(scores))]
+        return int(pick[0]), int(pick[1]), True
+    flat_idx = int(np.argmax(q_esp + q_nsp))
+    a_esp, a_nsp = np.unravel_index(flat_idx, q_esp.shape)
+    return int(a_esp), int(a_nsp), False
+
+
+def _bo_objective(out: BaselineOutcome) -> float:
+    return float(out.epsilon_proxy)
+
+
+def _bo_is_better(candidate: BaselineOutcome, incumbent: BaselineOutcome | None) -> bool:
+    if incumbent is None:
+        return True
+
+    cand_eps = _bo_objective(candidate)
+    inc_eps = _bo_objective(incumbent)
+    if cand_eps < inc_eps - 1e-12:
+        return True
+    if abs(cand_eps - inc_eps) > 1e-12:
+        return False
+
+    cand_rev = candidate.esp_revenue + candidate.nsp_revenue
+    inc_rev = incumbent.esp_revenue + incumbent.nsp_revenue
+    if cand_rev > inc_rev + 1e-12:
+        return True
+    if abs(cand_rev - inc_rev) > 1e-12:
+        return False
+
+    return candidate.social_cost < incumbent.social_cost - 1e-12
+
+
+def _price_cache_key(pE: float, pN: float) -> tuple[float, float]:
+    return (round(float(pE), 12), round(float(pN), 12))
+
+
+def _rbf_kernel(x1: np.ndarray, x2: np.ndarray, length_scale: float) -> np.ndarray:
+    ls = max(float(length_scale), 1e-9)
+    x1_scaled = np.asarray(x1, dtype=float) / ls
+    x2_scaled = np.asarray(x2, dtype=float) / ls
+    d2 = np.sum((x1_scaled[:, None, :] - x2_scaled[None, :, :]) ** 2, axis=2)
+    return np.exp(-0.5 * d2)
+
+
+def _gp_predict(
+    observed_x: np.ndarray,
+    observed_y: np.ndarray,
+    query_x: np.ndarray,
+    length_scale: float,
+    noise: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    if observed_x.ndim != 2 or query_x.ndim != 2:
+        raise ValueError("observed_x and query_x must be 2D arrays.")
+    if observed_x.shape[0] != observed_y.shape[0]:
+        raise ValueError("observed_x and observed_y must have the same number of samples.")
+    if observed_x.shape[0] == 0:
+        raise ValueError("At least one observed sample is required for GP prediction.")
+
+    y = np.asarray(observed_y, dtype=float)
+    y_mean = float(np.mean(y))
+    y_scale = float(np.std(y))
+    if y_scale < 1e-9:
+        y_scale = 1.0
+    y_norm = (y - y_mean) / y_scale
+
+    k_xx = _rbf_kernel(observed_x, observed_x, length_scale)
+    eye = np.eye(k_xx.shape[0], dtype=float)
+    jitter = max(float(noise), 1e-9)
+    chol: np.ndarray | None = None
+    for _ in range(6):
+        try:
+            chol = np.linalg.cholesky(k_xx + jitter * eye)
+            break
+        except np.linalg.LinAlgError:
+            jitter *= 10.0
+
+    if chol is None:
+        mu = np.full(query_x.shape[0], y_mean, dtype=float)
+        sigma = np.full(query_x.shape[0], y_scale, dtype=float)
+        return mu, sigma
+
+    alpha = np.linalg.solve(chol.T, np.linalg.solve(chol, y_norm))
+    k_xs = _rbf_kernel(observed_x, query_x, length_scale)
+    mu_norm = k_xs.T @ alpha
+    v = np.linalg.solve(chol, k_xs)
+    var_norm = np.maximum(1.0 - np.sum(v * v, axis=0), 1e-9)
+    mu = y_mean + y_scale * mu_norm
+    sigma = y_scale * np.sqrt(var_norm)
+    return mu, sigma
+
+
+def _real_deviation_gap_audit(
+    current_out: BaselineOutcome,
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+    pE_audit_grid: np.ndarray,
+    pN_audit_grid: np.ndarray,
+) -> float:
+    def cached_stage2(pE: float, pN: float) -> BaselineOutcome:
+        key = _price_cache_key(pE, pN)
+        if key not in stage2_cache:
+            stage2_cache[key] = _stage2_solver(
+                base_cfg.stage2_solver_for_pricing,
+                users,
+                float(pE),
+                float(pN),
+                system,
+                stack_cfg,
+                base_cfg,
+            )
+        return stage2_cache[key]
+
+    pE_cur, pN_cur = float(current_out.price[0]), float(current_out.price[1])
+    best_esp_rev = float(current_out.esp_revenue)
+    best_nsp_rev = float(current_out.nsp_revenue)
+
+    for cand_pE in pE_audit_grid:
+        cand_out = cached_stage2(float(cand_pE), pN_cur)
+        if cand_out.esp_revenue > best_esp_rev:
+            best_esp_rev = float(cand_out.esp_revenue)
+
+    for cand_pN in pN_audit_grid:
+        cand_out = cached_stage2(pE_cur, float(cand_pN))
+        if cand_out.nsp_revenue > best_nsp_rev:
+            best_nsp_rev = float(cand_out.nsp_revenue)
+
+    eps_E = float(best_esp_rev - current_out.esp_revenue)
+    eps_N = float(best_nsp_rev - current_out.nsp_revenue)
+    return float(max(eps_E, eps_N))
+
+
+def _run_stage1_gp_bo(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    *,
+    outcome_name: str,
+    objective_name: str,
+    init_points: int,
+    seed_offset: int,
+) -> BaselineOutcome:
+    rng = np.random.default_rng(base_cfg.random_seed + seed_offset)
+    x: list[tuple[float, float]] = []
+    y: list[float] = []
+    best: BaselineOutcome | None = None
+    init_points = max(1, int(init_points))
+    candidate_pool = max(1, int(base_cfg.bo_candidate_pool))
+    n_iters = max(0, int(base_cfg.bo_iters))
+    pE_min, pE_max = float(system.cE), float(base_cfg.max_price_E)
+    pN_min, pN_max = float(system.cN), float(base_cfg.max_price_N)
+    stage2_cache: dict[tuple[float, float], BaselineOutcome] = {}
+    pE_audit_grid = np.linspace(pE_min, pE_max, max(2, int(base_cfg.gso_grid_points)))
+    pN_audit_grid = np.linspace(pN_min, pN_max, max(2, int(base_cfg.gso_grid_points)))
+
+    def evaluate(pE: float, pN: float) -> None:
+        nonlocal best
+        key = _price_cache_key(pE, pN)
+        if key not in stage2_cache:
+            stage2_cache[key] = _stage2_solver(
+                base_cfg.stage2_solver_for_pricing,
+                users,
+                pE,
+                pN,
+                system,
+                stack_cfg,
+                base_cfg,
+            )
+        out = stage2_cache[key]
+        if objective_name == "real_revenue_deviation_gap":
+            score = _real_deviation_gap_audit(
+                out,
+                users,
+                system,
+                stack_cfg,
+                base_cfg,
+                stage2_cache,
+                pE_audit_grid,
+                pN_audit_grid,
+            )
+            candidate = replace(out, epsilon_proxy=float(score))
+        elif objective_name == "epsilon_proxy":
+            score = float(out.epsilon_proxy)
+            candidate = out
+        else:
+            raise ValueError(f"Unknown BO objective: {objective_name}")
+        x.append((pE, pN))
+        y.append(score)
+        if _bo_is_better(candidate, best):
+            best = candidate
+
+    start_pE = min(max(float(stack_cfg.initial_pE), pE_min), pE_max)
+    start_pN = min(max(float(stack_cfg.initial_pN), pN_min), pN_max)
+    evaluate(start_pE, start_pN)
+
+    for _ in range(init_points - 1):
+        pE = float(rng.uniform(system.cE, base_cfg.max_price_E))
+        pN = float(rng.uniform(system.cN, base_cfg.max_price_N))
+        evaluate(pE, pN)
+
+    for t in range(n_iters):
+        cand = np.column_stack(
+            [
+                rng.uniform(pE_min, pE_max, size=candidate_pool),
+                rng.uniform(pN_min, pN_max, size=candidate_pool),
+            ]
+        )
+        x_arr = np.asarray(x, dtype=float)
+        y_arr = np.asarray(y, dtype=float)
+        mu, sigma = _gp_predict(
+            x_arr,
+            y_arr,
+            cand,
+            length_scale=base_cfg.bo_kernel_bandwidth,
+        )
+        beta = max(float(base_cfg.bo_ucb_beta), 0.0) * math.sqrt(2.0 * math.log(t + 2.0))
+        acquisition = mu - beta * sigma
+        order = np.argsort(acquisition)
+        pick = int(order[0])
+        for idx in order:
+            d2 = np.sum((x_arr - cand[int(idx)]) ** 2, axis=1)
+            if float(np.min(d2)) > 1e-12:
+                pick = int(idx)
+                break
+        pE = float(cand[pick, 0])
+        pN = float(cand[pick, 1])
+        evaluate(pE, pN)
+
+    assert best is not None
+    return BaselineOutcome(
+        name=outcome_name,
+        price=best.price,
+        offloading_set=best.offloading_set,
+        social_cost=best.social_cost,
+        esp_revenue=best.esp_revenue,
+        nsp_revenue=best.nsp_revenue,
+        epsilon_proxy=best.epsilon_proxy,
+        meta={
+            "evals": len(x),
+            "objective": objective_name,
+            "acquisition": "gp_lcb",
+            "init_points": init_points,
+            "stage2_unique_prices": len(stage2_cache),
+            **(
+                {"audit_grid_points": int(pE_audit_grid.size)}
+                if objective_name == "real_revenue_deviation_gap"
+                else {}
+            ),
+        },
+    )
 
 
 def baseline_stage1_bo(
@@ -1338,68 +1959,35 @@ def baseline_stage1_bo(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    rng = np.random.default_rng(base_cfg.random_seed + 101)
-    x: list[tuple[float, float]] = []
-    y: list[float] = []
-    best: BaselineOutcome | None = None
+    """GP-based Bayesian optimization on epsilon proxy."""
+    return _run_stage1_gp_bo(
+        users,
+        system,
+        stack_cfg,
+        base_cfg,
+        outcome_name="BO",
+        objective_name="epsilon_proxy",
+        init_points=int(base_cfg.bo_init_points),
+        seed_offset=101,
+    )
 
-    def evaluate(pE: float, pN: float) -> BaselineOutcome:
-        out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
-        return out
 
-    for _ in range(base_cfg.bo_init_points):
-        pE = float(rng.uniform(system.cE, base_cfg.max_price_E))
-        pN = float(rng.uniform(system.cN, base_cfg.max_price_N))
-        out = evaluate(pE, pN)
-        val = _joint_objective(out)
-        x.append((pE, pN))
-        y.append(val)
-        if best is None or val > _joint_objective(best):
-            best = out
-
-    for t in range(base_cfg.bo_iters):
-        cand = np.column_stack(
-            [
-                rng.uniform(system.cE, base_cfg.max_price_E, size=base_cfg.bo_candidate_pool),
-                rng.uniform(system.cN, base_cfg.max_price_N, size=base_cfg.bo_candidate_pool),
-            ]
-        )
-        x_arr = np.asarray(x)
-        y_arr = np.asarray(y)
-        scores = np.zeros(cand.shape[0], dtype=float)
-        for i in range(cand.shape[0]):
-            d2 = np.sum((x_arr - cand[i]) ** 2, axis=1)
-            k = np.exp(-d2 / max(base_cfg.bo_kernel_bandwidth, 1e-12))
-            wsum = float(np.sum(k))
-            if wsum < 1e-12:
-                mu = float(np.mean(y_arr))
-                sigma = float(np.std(y_arr) + 1.0)
-            else:
-                w = k / wsum
-                mu = float(np.sum(w * y_arr))
-                sigma = float(np.sqrt(max(np.sum(w * (y_arr - mu) ** 2), 1e-12)))
-            beta = base_cfg.bo_ucb_beta / math.sqrt(t + 1.0)
-            scores[i] = mu + beta * sigma
-        pick = int(np.argmax(scores))
-        pE = float(cand[pick, 0])
-        pN = float(cand[pick, 1])
-        out = evaluate(pE, pN)
-        val = _joint_objective(out)
-        x.append((pE, pN))
-        y.append(val)
-        if best is None or val > _joint_objective(best):
-            best = out
-
-    assert best is not None
-    return BaselineOutcome(
-        name="BO",
-        price=best.price,
-        offloading_set=best.offloading_set,
-        social_cost=best.social_cost,
-        esp_revenue=best.esp_revenue,
-        nsp_revenue=best.nsp_revenue,
-        epsilon_proxy=best.epsilon_proxy,
-        meta={"evals": len(x)},
+def baseline_stage1_bo_online_real_gap(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """Online GP-BO variant with |D0|=1 on real deviation gap."""
+    return _run_stage1_gp_bo(
+        users,
+        system,
+        stack_cfg,
+        base_cfg,
+        outcome_name="BO-online",
+        objective_name="real_revenue_deviation_gap",
+        init_points=1,
+        seed_offset=151,
     )
 
 
@@ -1409,44 +1997,74 @@ def baseline_stage1_drl(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """Joint-action tabular Q-learning with provider-specific rewards."""
     grid_e = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.drl_price_levels)
     grid_n = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.drl_price_levels)
-    actions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)]
-    q = np.zeros((grid_e.size, grid_n.size, len(actions)), dtype=float)
+    action_deltas = (-1, 0, 1)
+    q_esp = np.zeros((grid_e.size, grid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
+    q_nsp = np.zeros((grid_e.size, grid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
     rng = np.random.default_rng(base_cfg.random_seed + 303)
+    stage2_cache: dict[tuple[int, int], BaselineOutcome] = {}
 
     def clamp(idx: int, n: int) -> int:
         return min(max(idx, 0), n - 1)
+
+    def state_outcome(e_idx: int, n_idx: int) -> BaselineOutcome:
+        key = (int(e_idx), int(n_idx))
+        if key not in stage2_cache:
+            stage2_cache[key] = _stage2_solver(
+                base_cfg.stage2_solver_for_pricing,
+                users,
+                float(grid_e[key[0]]),
+                float(grid_n[key[1]]),
+                system,
+                stack_cfg,
+                base_cfg,
+            )
+        return stage2_cache[key]
 
     for _ in range(base_cfg.drl_episodes):
         i = int(rng.integers(0, grid_e.size))
         j = int(rng.integers(0, grid_n.size))
         for _step in range(base_cfg.drl_steps_per_episode):
             if rng.uniform() < base_cfg.drl_epsilon:
-                a_idx = int(rng.integers(0, len(actions)))
+                a_esp = int(rng.integers(0, len(action_deltas)))
+                a_nsp = int(rng.integers(0, len(action_deltas)))
             else:
-                a_idx = int(np.argmax(q[i, j]))
-            di, dj = actions[a_idx]
-            ni = clamp(i + di, grid_e.size)
-            nj = clamp(j + dj, grid_n.size)
-            out = _stage2_solver(
-                base_cfg.stage2_solver_for_pricing,
-                users,
-                float(grid_e[ni]),
-                float(grid_n[nj]),
-                system,
-                stack_cfg,
-                base_cfg,
-            )
-            reward = _joint_objective(out)
-            td_target = reward + base_cfg.drl_gamma * float(np.max(q[ni, nj]))
-            q[i, j, a_idx] += base_cfg.drl_alpha * (td_target - q[i, j, a_idx])
+                a_esp, a_nsp, _ = _joint_action_q_greedy_action(q_esp[i, j], q_nsp[i, j])
+            ni = clamp(i + action_deltas[a_esp], grid_e.size)
+            nj = clamp(j + action_deltas[a_nsp], grid_n.size)
+            out = state_outcome(ni, nj)
+            reward_esp = float(out.esp_revenue)
+            reward_nsp = float(out.nsp_revenue)
+            next_a_esp, next_a_nsp, _ = _joint_action_q_greedy_action(q_esp[ni, nj], q_nsp[ni, nj])
+            td_target_esp = reward_esp + base_cfg.drl_gamma * float(q_esp[ni, nj, next_a_esp, next_a_nsp])
+            td_target_nsp = reward_nsp + base_cfg.drl_gamma * float(q_nsp[ni, nj, next_a_esp, next_a_nsp])
+            q_esp[i, j, a_esp, a_nsp] += base_cfg.drl_alpha * (td_target_esp - q_esp[i, j, a_esp, a_nsp])
+            q_nsp[i, j, a_esp, a_nsp] += base_cfg.drl_alpha * (td_target_nsp - q_nsp[i, j, a_esp, a_nsp])
             i, j = ni, nj
 
-    best_idx = np.unravel_index(np.argmax(np.max(q, axis=2)), (grid_e.size, grid_n.size))
-    pE = float(grid_e[int(best_idx[0])])
-    pN = float(grid_n[int(best_idx[1])])
-    out = _stage2_solver(base_cfg.stage2_solver_for_pricing, users, pE, pN, system, stack_cfg, base_cfg)
+    start_i = int(np.argmin(np.abs(grid_e - max(system.cE, float(stack_cfg.initial_pE)))))
+    start_j = int(np.argmin(np.abs(grid_n - max(system.cN, float(stack_cfg.initial_pN)))))
+    i, j = start_i, start_j
+    rollout_steps = 0
+    pure_nash_steps = 0
+    visited = {(i, j)}
+    rollout_limit = max(1, int(base_cfg.drl_steps_per_episode))
+    for _ in range(rollout_limit):
+        a_esp, a_nsp, has_pure_nash = _joint_action_q_greedy_action(q_esp[i, j], q_nsp[i, j])
+        pure_nash_steps += int(has_pure_nash)
+        ni = clamp(i + action_deltas[a_esp], grid_e.size)
+        nj = clamp(j + action_deltas[a_nsp], grid_n.size)
+        if ni == i and nj == j:
+            break
+        i, j = ni, nj
+        rollout_steps += 1
+        if (i, j) in visited:
+            break
+        visited.add((i, j))
+
+    out = state_outcome(i, j)
     return BaselineOutcome(
         name="DRL",
         price=out.price,
@@ -1455,7 +2073,14 @@ def baseline_stage1_drl(
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
         epsilon_proxy=out.epsilon_proxy,
-        meta={"episodes": base_cfg.drl_episodes},
+        meta={
+            "episodes": base_cfg.drl_episodes,
+            "policy": "joint_action_q",
+            "rewards": "esp_revenue,nsp_revenue",
+            "rollout_steps": rollout_steps,
+            "pure_nash_steps": pure_nash_steps,
+            "stage2_unique_prices": len(stage2_cache),
+        },
     )
 
 
@@ -1667,7 +2292,10 @@ def run_all_baselines(
         outcomes.append(baseline_stage2_centralized_solver(users, init_pE, init_pN, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_grid_search_oracle(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_pbdr(users, system, stack_cfg, base_cfg))
+    if users.n <= base_cfg.exact_max_users:
+        outcomes.append(baseline_stage1_epec_diagonalization(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_bo(users, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage1_bo_online_real_gap(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_drl(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_market_equilibrium(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))

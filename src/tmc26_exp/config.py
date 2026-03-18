@@ -327,6 +327,14 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
     if cfg.max_price_E <= stack.initial_pE or cfg.max_price_N <= stack.initial_pN:
         # Keep this soft but safe for pricing search.
         raise ValueError("max_price_E/max_price_N should be greater than initial prices.")
+    if cfg.bo_init_points <= 0 or cfg.bo_candidate_pool <= 0:
+        raise ValueError("BO init_points and candidate_pool must be positive.")
+    if cfg.bo_iters < 0:
+        raise ValueError("bo_iters must be non-negative.")
+    if cfg.bo_kernel_bandwidth <= 0:
+        raise ValueError("bo_kernel_bandwidth must be positive.")
+    if cfg.bo_ucb_beta < 0:
+        raise ValueError("bo_ucb_beta must be non-negative.")
     if cfg.random_offloading_trials <= 0:
         raise ValueError("random_offloading_trials must be positive.")
     if not (0 < cfg.random_offloading_prob < 1):
