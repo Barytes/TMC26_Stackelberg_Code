@@ -99,6 +99,14 @@ class BaselineConfig:
     bo_candidate_pool: int
     bo_kernel_bandwidth: float
     bo_ucb_beta: float
+    ga_objective: str
+    ga_population_size: int
+    ga_generations: int
+    ga_elite_size: int
+    ga_tournament_size: int
+    ga_crossover_rate: float
+    ga_mutation_rate: float
+    ga_mutation_std: float
     drl_price_levels: int
     drl_episodes: int
     drl_steps_per_episode: int
@@ -292,6 +300,14 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         bo_candidate_pool=int(raw.get("bo_candidate_pool", 96)),
         bo_kernel_bandwidth=float(raw.get("bo_kernel_bandwidth", 0.25)),
         bo_ucb_beta=float(raw.get("bo_ucb_beta", 2.5)),
+        ga_objective=str(raw.get("ga_objective", "epsilon_proxy")).strip().lower(),
+        ga_population_size=int(raw.get("ga_population_size", 24)),
+        ga_generations=int(raw.get("ga_generations", 30)),
+        ga_elite_size=int(raw.get("ga_elite_size", 2)),
+        ga_tournament_size=int(raw.get("ga_tournament_size", 3)),
+        ga_crossover_rate=float(raw.get("ga_crossover_rate", 0.8)),
+        ga_mutation_rate=float(raw.get("ga_mutation_rate", 0.2)),
+        ga_mutation_std=float(raw.get("ga_mutation_std", 0.08)),
         drl_price_levels=int(raw.get("drl_price_levels", 15)),
         drl_episodes=int(raw.get("drl_episodes", 120)),
         drl_steps_per_episode=int(raw.get("drl_steps_per_episode", 40)),
@@ -335,6 +351,24 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         raise ValueError("bo_kernel_bandwidth must be positive.")
     if cfg.bo_ucb_beta < 0:
         raise ValueError("bo_ucb_beta must be non-negative.")
+    if cfg.ga_objective not in {"epsilon_proxy", "real_revenue_deviation_gap", "joint_revenue", "social_cost"}:
+        raise ValueError(
+            "ga_objective must be one of epsilon_proxy/real_revenue_deviation_gap/joint_revenue/social_cost."
+        )
+    if cfg.ga_population_size <= 0:
+        raise ValueError("ga_population_size must be positive.")
+    if cfg.ga_generations < 0:
+        raise ValueError("ga_generations must be non-negative.")
+    if cfg.ga_elite_size <= 0 or cfg.ga_elite_size > cfg.ga_population_size:
+        raise ValueError("ga_elite_size must satisfy 1 <= elite_size <= ga_population_size.")
+    if cfg.ga_tournament_size <= 0 or cfg.ga_tournament_size > cfg.ga_population_size:
+        raise ValueError("ga_tournament_size must satisfy 1 <= tournament_size <= ga_population_size.")
+    if not (0.0 <= cfg.ga_crossover_rate <= 1.0):
+        raise ValueError("ga_crossover_rate must be in [0,1].")
+    if not (0.0 <= cfg.ga_mutation_rate <= 1.0):
+        raise ValueError("ga_mutation_rate must be in [0,1].")
+    if cfg.ga_mutation_std <= 0:
+        raise ValueError("ga_mutation_std must be positive.")
     if cfg.random_offloading_trials <= 0:
         raise ValueError("random_offloading_trials must be positive.")
     if not (0 < cfg.random_offloading_prob < 1):

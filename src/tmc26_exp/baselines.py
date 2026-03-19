@@ -1705,29 +1705,63 @@ def _joint_action_q_greedy_action(
     return int(a_esp), int(a_nsp), False
 
 
-def _bo_objective(out: BaselineOutcome) -> float:
-    return float(out.epsilon_proxy)
+def _objective_score_and_candidate(
+    out: BaselineOutcome,
+    objective_name: str,
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+    pE_audit_grid: np.ndarray,
+    pN_audit_grid: np.ndarray,
+) -> tuple[float, BaselineOutcome]:
+    if objective_name == "real_revenue_deviation_gap":
+        score = _real_deviation_gap_audit(
+            out,
+            users,
+            system,
+            stack_cfg,
+            base_cfg,
+            stage2_cache,
+            pE_audit_grid,
+            pN_audit_grid,
+        )
+        return float(score), replace(out, epsilon_proxy=float(score))
+    if objective_name == "epsilon_proxy":
+        return float(out.epsilon_proxy), out
+    if objective_name == "joint_revenue":
+        return float(-(out.esp_revenue + out.nsp_revenue)), out
+    if objective_name == "social_cost":
+        return float(out.social_cost), out
+    raise ValueError(f"Unknown objective: {objective_name}")
 
 
-def _bo_is_better(candidate: BaselineOutcome, incumbent: BaselineOutcome | None) -> bool:
-    if incumbent is None:
+def _objective_is_better(
+    candidate_score: float,
+    candidate_out: BaselineOutcome,
+    incumbent_score: float | None,
+    incumbent_out: BaselineOutcome | None,
+) -> bool:
+    if incumbent_out is None or incumbent_score is None:
         return True
-
-    cand_eps = _bo_objective(candidate)
-    inc_eps = _bo_objective(incumbent)
-    if cand_eps < inc_eps - 1e-12:
+    if candidate_score < incumbent_score - 1e-12:
         return True
-    if abs(cand_eps - inc_eps) > 1e-12:
+    if abs(candidate_score - incumbent_score) > 1e-12:
+        return False
+    if candidate_out.epsilon_proxy < incumbent_out.epsilon_proxy - 1e-12:
+        return True
+    if abs(candidate_out.epsilon_proxy - incumbent_out.epsilon_proxy) > 1e-12:
         return False
 
-    cand_rev = candidate.esp_revenue + candidate.nsp_revenue
-    inc_rev = incumbent.esp_revenue + incumbent.nsp_revenue
+    cand_rev = candidate_out.esp_revenue + candidate_out.nsp_revenue
+    inc_rev = incumbent_out.esp_revenue + incumbent_out.nsp_revenue
     if cand_rev > inc_rev + 1e-12:
         return True
     if abs(cand_rev - inc_rev) > 1e-12:
         return False
 
-    return candidate.social_cost < incumbent.social_cost - 1e-12
+    return candidate_out.social_cost < incumbent_out.social_cost - 1e-12
 
 
 def _price_cache_key(pE: float, pN: float) -> tuple[float, float]:
@@ -1847,6 +1881,7 @@ def _run_stage1_gp_bo(
     x: list[tuple[float, float]] = []
     y: list[float] = []
     best: BaselineOutcome | None = None
+    best_score: float | None = None
     init_points = max(1, int(init_points))
     candidate_pool = max(1, int(base_cfg.bo_candidate_pool))
     n_iters = max(0, int(base_cfg.bo_iters))
@@ -1857,7 +1892,7 @@ def _run_stage1_gp_bo(
     pN_audit_grid = np.linspace(pN_min, pN_max, max(2, int(base_cfg.gso_grid_points)))
 
     def evaluate(pE: float, pN: float) -> None:
-        nonlocal best
+        nonlocal best, best_score
         key = _price_cache_key(pE, pN)
         if key not in stage2_cache:
             stage2_cache[key] = _stage2_solver(
@@ -1870,27 +1905,22 @@ def _run_stage1_gp_bo(
                 base_cfg,
             )
         out = stage2_cache[key]
-        if objective_name == "real_revenue_deviation_gap":
-            score = _real_deviation_gap_audit(
-                out,
-                users,
-                system,
-                stack_cfg,
-                base_cfg,
-                stage2_cache,
-                pE_audit_grid,
-                pN_audit_grid,
-            )
-            candidate = replace(out, epsilon_proxy=float(score))
-        elif objective_name == "epsilon_proxy":
-            score = float(out.epsilon_proxy)
-            candidate = out
-        else:
-            raise ValueError(f"Unknown BO objective: {objective_name}")
+        score, candidate = _objective_score_and_candidate(
+            out,
+            objective_name,
+            users,
+            system,
+            stack_cfg,
+            base_cfg,
+            stage2_cache,
+            pE_audit_grid,
+            pN_audit_grid,
+        )
         x.append((pE, pN))
         y.append(score)
-        if _bo_is_better(candidate, best):
+        if _objective_is_better(score, candidate, best_score, best):
             best = candidate
+            best_score = float(score)
 
     start_pE = min(max(float(stack_cfg.initial_pE), pE_min), pE_max)
     start_pN = min(max(float(stack_cfg.initial_pN), pN_min), pN_max)
@@ -1989,6 +2019,193 @@ def baseline_stage1_bo_online_real_gap(
         init_points=1,
         seed_offset=151,
     )
+
+
+def run_stage1_genetic_algorithm(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    *,
+    outcome_name: str = "GA",
+    objective_name: str | None = None,
+) -> tuple[BaselineOutcome, list[tuple[float, float]]]:
+    objective_name = str(objective_name or base_cfg.ga_objective).strip().lower()
+    rng = np.random.default_rng(base_cfg.random_seed + 401)
+    n_pop = max(2, int(base_cfg.ga_population_size))
+    n_gen = max(0, int(base_cfg.ga_generations))
+    elite_size = min(max(1, int(base_cfg.ga_elite_size)), n_pop)
+    tournament_size = min(max(1, int(base_cfg.ga_tournament_size)), n_pop)
+    crossover_rate = min(max(float(base_cfg.ga_crossover_rate), 0.0), 1.0)
+    mutation_rate = min(max(float(base_cfg.ga_mutation_rate), 0.0), 1.0)
+    mutation_std = max(float(base_cfg.ga_mutation_std), 1e-9)
+    pE_min, pE_max = float(system.cE), float(base_cfg.max_price_E)
+    pN_min, pN_max = float(system.cN), float(base_cfg.max_price_N)
+    span_E = max(pE_max - pE_min, 1e-9)
+    span_N = max(pN_max - pN_min, 1e-9)
+    stage2_cache: dict[tuple[float, float], BaselineOutcome] = {}
+    pE_audit_grid = np.linspace(pE_min, pE_max, max(2, int(base_cfg.gso_grid_points)))
+    pN_audit_grid = np.linspace(pN_min, pN_max, max(2, int(base_cfg.gso_grid_points)))
+    evals = 0
+    best_out: BaselineOutcome | None = None
+    best_score: float | None = None
+    best_price: tuple[float, float] | None = None
+
+    def _clip_price(pE: float, pN: float) -> tuple[float, float]:
+        return (
+            round(min(max(float(pE), pE_min), pE_max), 6),
+            round(min(max(float(pN), pN_min), pN_max), 6),
+        )
+
+    def _evaluate_individual(pE: float, pN: float) -> tuple[tuple[float, float], float, BaselineOutcome]:
+        nonlocal evals, best_out, best_score, best_price
+        pE, pN = _clip_price(pE, pN)
+        evals += 1
+        key = _price_cache_key(pE, pN)
+        if key not in stage2_cache:
+            stage2_cache[key] = _stage2_solver(
+                base_cfg.stage2_solver_for_pricing,
+                users,
+                pE,
+                pN,
+                system,
+                stack_cfg,
+                base_cfg,
+            )
+        out = stage2_cache[key]
+        score, candidate = _objective_score_and_candidate(
+            out,
+            objective_name,
+            users,
+            system,
+            stack_cfg,
+            base_cfg,
+            stage2_cache,
+            pE_audit_grid,
+            pN_audit_grid,
+        )
+        if _objective_is_better(score, candidate, best_score, best_out):
+            best_out = candidate
+            best_score = float(score)
+            best_price = (pE, pN)
+        return (pE, pN), float(score), candidate
+
+    def _tournament_select(
+        population: np.ndarray,
+        scores: np.ndarray,
+    ) -> np.ndarray:
+        idx = rng.integers(0, population.shape[0], size=tournament_size)
+        best_idx = int(idx[int(np.argmin(scores[idx]))])
+        return population[best_idx].copy()
+
+    def _crossover(parent_a: np.ndarray, parent_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if float(rng.uniform()) >= crossover_rate:
+            return parent_a.copy(), parent_b.copy()
+        lam = float(rng.uniform())
+        child_a = lam * parent_a + (1.0 - lam) * parent_b
+        child_b = lam * parent_b + (1.0 - lam) * parent_a
+        return child_a, child_b
+
+    def _mutate(child: np.ndarray) -> np.ndarray:
+        out = child.copy()
+        if float(rng.uniform()) < mutation_rate:
+            out[0] += float(rng.normal(0.0, mutation_std * span_E))
+        if float(rng.uniform()) < mutation_rate:
+            out[1] += float(rng.normal(0.0, mutation_std * span_N))
+        out[0], out[1] = _clip_price(out[0], out[1])
+        return out
+
+    population = np.column_stack(
+        [
+            rng.uniform(pE_min, pE_max, size=n_pop),
+            rng.uniform(pN_min, pN_max, size=n_pop),
+        ]
+    )
+    population[0, 0] = min(max(float(stack_cfg.initial_pE), pE_min), pE_max)
+    population[0, 1] = min(max(float(stack_cfg.initial_pN), pN_min), pN_max)
+
+    init_price = _clip_price(float(stack_cfg.initial_pE), float(stack_cfg.initial_pN))
+    trajectory: list[tuple[float, float]] = [init_price]
+
+    def _evaluate_population(pop: np.ndarray) -> tuple[np.ndarray, list[BaselineOutcome], np.ndarray]:
+        scored_prices: list[tuple[float, float]] = []
+        scored_outcomes: list[BaselineOutcome] = []
+        score_values: list[float] = []
+        for pE, pN in pop:
+            price, score, out = _evaluate_individual(float(pE), float(pN))
+            scored_prices.append(price)
+            scored_outcomes.append(out)
+            score_values.append(score)
+        return np.asarray(scored_prices, dtype=float), scored_outcomes, np.asarray(score_values, dtype=float)
+
+    population, _, scores = _evaluate_population(population)
+    if best_price is not None and (
+        not trajectory
+        or abs(best_price[0] - trajectory[-1][0]) + abs(best_price[1] - trajectory[-1][1]) > 1e-12
+    ):
+        trajectory.append(best_price)
+
+    for _gen in range(n_gen):
+        order = np.argsort(scores)
+        next_population: list[np.ndarray] = [population[int(i)].copy() for i in order[:elite_size]]
+        while len(next_population) < n_pop:
+            parent_a = _tournament_select(population, scores)
+            parent_b = _tournament_select(population, scores)
+            child_a, child_b = _crossover(parent_a, parent_b)
+            next_population.append(_mutate(child_a))
+            if len(next_population) < n_pop:
+                next_population.append(_mutate(child_b))
+        population = np.asarray(next_population, dtype=float)
+        population, _, scores = _evaluate_population(population)
+        if best_price is not None and (
+            not trajectory
+            or abs(best_price[0] - trajectory[-1][0]) + abs(best_price[1] - trajectory[-1][1]) > 1e-12
+        ):
+            trajectory.append(best_price)
+
+    assert best_out is not None and best_score is not None
+    if not trajectory and best_price is not None:
+        trajectory = [best_price]
+    return (
+        BaselineOutcome(
+            name=outcome_name,
+            price=best_out.price,
+            offloading_set=best_out.offloading_set,
+            social_cost=best_out.social_cost,
+            esp_revenue=best_out.esp_revenue,
+            nsp_revenue=best_out.nsp_revenue,
+            epsilon_proxy=best_out.epsilon_proxy,
+            meta={
+                "objective": objective_name,
+                "population_size": n_pop,
+                "generations": n_gen,
+                "elite_size": elite_size,
+                "tournament_size": tournament_size,
+                "crossover_rate": round(crossover_rate, 6),
+                "mutation_rate": round(mutation_rate, 6),
+                "mutation_std": round(mutation_std, 6),
+                "trajectory_len": len(trajectory),
+                "evals": evals,
+                "stage2_unique_prices": len(stage2_cache),
+                **(
+                    {"audit_grid_points": int(pE_audit_grid.size)}
+                    if objective_name == "real_revenue_deviation_gap"
+                    else {}
+                ),
+            },
+        ),
+        trajectory,
+    )
+
+
+def baseline_stage1_ga(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    outcome, _ = run_stage1_genetic_algorithm(users, system, stack_cfg, base_cfg, outcome_name="GA")
+    return outcome
 
 
 def baseline_stage1_drl(
@@ -2296,6 +2513,7 @@ def run_all_baselines(
         outcomes.append(baseline_stage1_epec_diagonalization(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_bo(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_bo_online_real_gap(users, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage1_ga(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_drl(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_market_equilibrium(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))

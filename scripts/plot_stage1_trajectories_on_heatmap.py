@@ -12,7 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from tmc26_exp.baselines import run_stage1_epec_diagonalization
+from tmc26_exp.baselines import run_stage1_epec_diagonalization, run_stage1_genetic_algorithm
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import run_stage1_solver
@@ -171,8 +171,8 @@ def _parse_baselines(raw: str) -> list[str]:
         name = part.upper()
         if not name:
             continue
-        if name not in {"BO", "BO-ONLINE", "DRL", "EPEC-DIAG"}:
-            raise ValueError(f"Unsupported baseline: {name}. Allowed: BO, BO-ONLINE, DRL, EPEC-DIAG.")
+        if name not in {"BO", "BO-ONLINE", "GA", "DRL", "EPEC-DIAG"}:
+            raise ValueError(f"Unsupported baseline: {name}. Allowed: BO, BO-ONLINE, GA, DRL, EPEC-DIAG.")
         if name not in out:
             out.append(name)
     return out
@@ -435,10 +435,11 @@ def _plot_compare(
         "VBBR": {"color": "cyan", "linestyle": "-", "linewidth": 1.8},
         "BO": {"color": "gold", "linestyle": "--", "linewidth": 1.5},
         "BO-ONLINE": {"color": "deepskyblue", "linestyle": ":", "linewidth": 1.7},
+        "GA": {"color": "orangered", "linestyle": "-", "linewidth": 1.6},
         "EPEC-DIAG": {"color": "white", "linestyle": "-", "linewidth": 1.6},
         "DRL": {"color": "lime", "linestyle": "-.", "linewidth": 1.5},
     }
-    for name in ["VBBR", "BO", "BO-ONLINE", "EPEC-DIAG", "DRL"]:
+    for name in ["VBBR", "BO", "BO-ONLINE", "GA", "EPEC-DIAG", "DRL"]:
         if name not in trajectories:
             continue
         traj = trajectories[name]
@@ -489,7 +490,7 @@ def _save_trajectory_csv(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot BO/BO-online/EPEC-diag/DRL/VBBR trajectory comparison on a known Stage-I heatmap CSV."
+        description="Plot BO/BO-online/GA/EPEC-diag/DRL/VBBR trajectory comparison on a known Stage-I heatmap CSV."
     )
     parser.add_argument("--csv", type=str, required=True, help="Path to price_grid_metrics.csv.")
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
@@ -505,7 +506,7 @@ def main() -> None:
         "--baselines",
         type=str,
         default="BO,DRL",
-        help="Comma-separated baseline trajectories to draw. Supported: BO,BO-ONLINE,EPEC-DIAG,DRL. Use 'none' to skip.",
+        help="Comma-separated baseline trajectories to draw. Supported: BO,BO-ONLINE,GA,EPEC-DIAG,DRL. Use 'none' to skip.",
     )
     parser.add_argument(
         "--bo-trace-mode",
@@ -513,6 +514,13 @@ def main() -> None:
         choices=["best", "samples"],
         default="best",
         help="BO trajectory visualization mode: incumbent-best path or sampled-point path.",
+    )
+    parser.add_argument(
+        "--ga-objective",
+        type=str,
+        choices=["epsilon_proxy", "real_revenue_deviation_gap", "joint_revenue", "social_cost"],
+        default=None,
+        help="Optional override for the GA objective.",
     )
     parser.add_argument(
         "--surface",
@@ -543,6 +551,11 @@ def main() -> None:
         type=str,
         default=None,
         help="Optional precomputed vbbr_trajectory.csv. If not set, VBBR will be recomputed.",
+    )
+    parser.add_argument(
+        "--skip-vbbr",
+        action="store_true",
+        help="Skip plotting the VBBR trajectory.",
     )
     parser.add_argument(
         "--search-max-iters",
@@ -602,6 +615,8 @@ def main() -> None:
             users = sample_users(cfg, rng)
         return users
 
+    ga_objective_name = str(args.ga_objective).strip() if args.ga_objective is not None else str(cfg.baselines.ga_objective)
+
     meta_lines: list[str] = [
         f"csv = {csv_path}",
         f"config = {config_path}",
@@ -609,11 +624,14 @@ def main() -> None:
         f"eps_tol = {eps_tol}",
         f"heatmap_surface = {args.surface}",
         f"bo_objective = {'real_revenue_deviation_gap' if bo_surface_name == 'real_gap' else 'epsilon_proxy'}",
+        f"ga_objective = {ga_objective_name}",
         "drl_rewards = esp_revenue,nsp_revenue",
         f"baselines_selected = {','.join(baselines) if baselines else 'none'}",
     ]
 
-    if args.vbbr_csv is not None:
+    if args.skip_vbbr:
+        meta_lines.append("vbbr_source = skipped")
+    elif args.vbbr_csv is not None:
         vbbr_path = Path(args.vbbr_csv)
         vbbr_traj = _load_trajectory_csv(vbbr_path)
         trajectories["VBBR"] = vbbr_traj
@@ -722,6 +740,28 @@ def main() -> None:
             ]
         )
 
+    if "GA" in baselines:
+        ga_cfg = replace(cfg.baselines, ga_objective=ga_objective_name)
+        ga_out, ga_traj = run_stage1_genetic_algorithm(
+            ensure_users(),
+            cfg.system,
+            cfg.stackelberg,
+            ga_cfg,
+            outcome_name="GA",
+        )
+        trajectories["GA"] = ga_traj
+        meta_lines.extend(
+            [
+                f"ga_objective = {ga_out.meta['objective']}",
+                f"ga_population_size = {ga_out.meta['population_size']}",
+                f"ga_generations = {ga_out.meta['generations']}",
+                f"ga_evals = {ga_out.meta['evals']}",
+                f"ga_trajectory_len = {ga_out.meta['trajectory_len']}",
+                f"ga_stage2_unique_prices = {ga_out.meta['stage2_unique_prices']}",
+                f"ga_final_eps_proxy = {ga_out.epsilon_proxy}",
+            ]
+        )
+
     if "DRL" in baselines:
         start_pE = float(args.drl_start_pE) if args.drl_start_pE is not None else float(cfg.stackelberg.initial_pE)
         start_pN = float(args.drl_start_pN) if args.drl_start_pN is not None else float(cfg.stackelberg.initial_pN)
@@ -790,6 +830,16 @@ def main() -> None:
                     "nearest_grid_bo_real_gap" if bo_surface_name == "real_gap" else "nearest_grid_bo_epsilon_proxy"
                 )
             )
+        elif name == "GA":
+            if ga_objective_name == "real_revenue_deviation_gap":
+                surface = eps
+                surface_label = "nearest_grid_ga_real_gap"
+            elif ga_objective_name == "epsilon_proxy" and eps_proxy is not None:
+                surface = eps_proxy
+                surface_label = "nearest_grid_ga_epsilon_proxy"
+            else:
+                surface = joint_revenue
+                surface_label = "nearest_grid_ga_joint_revenue"
         elif name == "EPEC-DIAG":
             surface = joint_revenue
             surface_label = "nearest_grid_joint_revenue"
