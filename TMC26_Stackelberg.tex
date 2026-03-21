@@ -1044,7 +1044,7 @@ In Algorithm \ref{alg:br_dynamics}, we aim to compute an $\epsilon$-approximate 
     G_k(\boldsymbol{p})=\max_{p_k'}\;U_k(p_k',p_{-k})-U_k(p_k,p_{-k})\quad\text{s.t.}\;(p_k',p_{-k})\in\mathcal{P}
 \end{equation}
 The Nash-equilibrium gap (NE gap) is then the maximum of these gains:
-\begin{equation}
+\begin{equation}\label{eq:NE-gap}
     \delta(\boldsymbol{p})\triangleq\max\{G_E(\boldsymbol{p}),G_N(\boldsymbol{p})\}.
 \end{equation}
 Based on this measure, we adopt the standard definition of an $\epsilon$-approximate Nash equilibrium for the service provider pricing game.
@@ -1093,7 +1093,7 @@ In this section, we evaluate the performance of the proposed algorithms through 
 \subsection{Experimental Setup}\label{subsec:exp_setup}
 
 \subsubsection{Simulation Settings}
-Unless otherwise specified, we consider a MEC system with a user set $\mathcal{I}$, where $|\mathcal{I}|$ varies up to $100$.
+The parameters follow similar settings in existing studies\cite{tutuncuoglu2024joint,tong2024stackelberg,chu2024joint}, and are set as follows unless specified otherwise. We consider a MEC system with a user set $\mathcal{I}$, where $|\mathcal{I}|$ varies up to $100$.
 The users are randomly distributed in a circular area with radius $500$ m centered at the NSP's base station.
 Let $r_i$ denote the distance between user $i$ and the base station.
 The large-scale path loss is modeled by the 3GPP urban macro formula
@@ -1113,24 +1113,34 @@ Their unit operational costs are set to $c_E=c_N=0.1$.
 For each parameter setting, all reported results are averaged over multiple independent random instances.
 
 \subsubsection{Baseline Methods}
-To rigorously evaluate the proposed framework, we compare it against various baseline methods categorized into two distinct groups: Stage II user equilibrium solvers, Stage I pricing equilibrium solvers, and overall strategic settings.
+To evaluate the effectiveness of the proposed algorithms, we benchmark it against two groups of baselines. The first includes methods for solving the Stackelberg equilibrium, while the second involves baselines with different strategic settings.
 
-\textbf{b) Baselines for Stage I Pricing Equilibrium:}
-To evaluate the performance of our proposed guided search algorithm for the Stackelberg equilibrium, we compare it with the following algorithms:
+\textbf{a) Baselines for Stackelberg Equilibrium:}
+To evaluate the performance of our approach in computing the Stackelberg equilibrium of the considered two-stage MLMF Stackelberg game, we compare with the following baselines:
 \begin{itemize}
-    \item \textbf{Grid Search Oracle (GSO):} Discretizes the $p_E, p_N$ pricing space into a fine-grained grid and evaluates the Stage II user equilibrium at each grid point. It serves as a brute-force method to find the near-optimal Stackelberg equilibrium. Directly solves the NP-hard Social Cost Minimization (SCM) problem using off-the-shelf centralized MINLP solvers.
-    \item \textbf{Bayesian Optimization (BO):} Treats the service providers' revenue functions as black-box models and employs Bayesian optimization to iteratively search for the optimal pricing strategies.
-    \item \textbf{Deep Reinforcement Learning (DRL):} Formulates the providers' pricing competition as a Markov Decision Process (MDP), utilizing DRL algorithms (e.g., PPO or DDPG) to learn pricing policies through continuous interaction with the user environment.
+    \item \textbf{Grid Search Oracle (GSO):} We perform a grid search on the two-dimensional joint pricing space $(p_E, p_N)$ for the Stackelberg equilibrium. At each grid point, we use a centralized mixed-integer non-linear programming (MINLP) solver to solve the user SOE, and compute the corresponding service provider revenues. Then, we compute the NE gap in \eqref{eq:NE-gap} at each grid point to locate the Stage-I pricing equilibrium. This baseline serves as a brute-force oracle benchmark.
+
+    \item \textbf{Genetic Algorithm (GA):} We employ a genetic algorithm to perform a derivative-free search over the two-dimensional pricing space. Each candidate price pair in the population is evaluated by solving the user SOE with centralized MINLP solver and computing an approximate NE gap on a coarse grid. The population evolves through selection, crossover, and mutation, and the best individual found is returned as the final pricing outcome.
+
+    \item \textbf{Bayesian Optimization (BO):} We formulate the Stage-I pricing problem as a black-box optimization over the two-dimensional price space and solve it using Gaussian-process-based Bayesian optimization. The objective is to minimize the same grid-based approximate NE gap used in the GA baseline. Each objective evaluation invokes the centralized MINLP solver to solve the Stage-II user SOE at the queried price pair.
+    
+    \item \textbf{Multi-Agent Reinforcement Learning (MARL):} We use multi-agent reinforcement learning (MARL) to solve the pricing game between the ESP and the NSP. Each service provider acts as an agent, selects its own price as action, and receives its own resulting revenue as the reward. The environment response at each joint action is generated by solving the Stage-II user SOE with centralized MINLP solver. We adopt a joint-action Q-learning approach, where agents learn to estimate the value of price pairs. Upon convergence, the greedy policy derived from the joint Q-function yields the final pricing outcome.
+
 \end{itemize}
 
-\textbf{c) Baselines for Strategic Settings:}
-To demonstrate the necessity and superiority of modeling the exact strategic interactions among the ESP, the NSP, and the users, we compare our overall MLMF Stackelberg framework with the following strategic setting baselines:
+\textbf{b) Baselines for Strategic Settings:}
+To highlight the importance of explicitly modeling the strategic interactions among the ESP, the NSP, and the users, we compare the proposed MLMF Stackelberg-game framework with the following baselines:
 \begin{itemize}
-    \item \textbf{Market Equilibrium:} Inspired by \cite{liu2022resource}, this baseline searches for the market equilibrium prices at which the user equilibrium induces an aggregate demand equal to the total resource supply. This baseline captures a \emph{non-strategic multi-provider} model with \emph{competitive users}.
-    \item \textbf{SingleSP:} Inspired by \cite{tutuncuoglu2024joint}, this baseline assumes a single provider managing both resources, who greedily selects offloaders and centrally optimizes resource allocation to maximize utility, with users paying the cost savings from offloading. This baseline highlights a \emph{single selfish provider} model with \emph{non-competitive users}.
-    \item \textbf{Random Offloading:} This baseline randomly selects users as offloaders and computes the corresponding pricing equilibrium with Algorithm \ref{alg:optimal_rne}. It captures a \emph{strategic multi-provider} model with \emph{non-strategic users}.
-\end{itemize}
+    \item \textbf{Market Equilibrium (ME):} Inspired by \cite{liu2022resource}, this baseline searches for the market-equilibrium price at which the user SOE approximately clears the market, \ie, the aggregate demand matches the total resource supply. It represents a \emph{non-strategic multi-provider} model with \emph{competitive users}.
 
+    \item \textbf{SingleSP:} Inspired by \cite{tutuncuoglu2024joint}, this baseline assumes that computation and bandwidth are controlled by a single service provider, which jointly determines the offloading users, pricing decisions, and resource allocation to maximize its total profit. In return, each offloading user pays the service provider an amount equivalent to its cost saving from offloading.
+    It represents a \emph{single selfish provider} model with \emph{non-competitive users}.
+
+    \item \textbf{Cooperative Pricing (Coop):} Inspired by \cite{liao2026cooperative}, the ESP and the NSP cooperate and jointly choose $(p_E, p_N)$ to maximize their total revenue, while the users still respond competitively in Stage II. It represents a \emph{cooperative multi-provider} model with \emph{competitive users}, and isolates the effect of inter-provider price competition in our non-cooperative Stage-I game.
+
+    \item \textbf{Random Offloading (Rand):} 
+    This baseline first selects a random set of offloading users. Given this fixed set, it then computes a pricing equilibrium for the service provider via alternating best-response updates. The process starts from an initial price pair and terminates when no unilateral profitable deviation exists. This baseline represents a \emph{strategic multi-provider} model with \emph{non-strategic users}.
+\end{itemize}
 
 
 % {\appendix[Proof of the Zonklar Equations]
