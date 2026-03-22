@@ -64,7 +64,9 @@ class StackelbergConfig:
     stage1_neighborhood_max_candidates: int
     gain_estimator_variant: Literal["boundary", "refined_price", "topk_real_reval"]
     gain_topk_k: int
-    stage1_solver_variant: Literal["algorithm5", "topk_brd", "vbbr_brd"]
+    stage1_solver_variant: Literal["paper_iterative_pricing", "topk_brd", "vbbr_brd"]
+    paper_local_Q: int
+    paper_restricted_gap_tol: float
     topk_brd_price_tol: float
     topk_brd_epsilon_tol: float
     topk_brd_cycle_window: int
@@ -198,6 +200,10 @@ def _parse_system(raw: dict[str, Any]) -> SystemConfig:
 
 
 def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
+    stage1_solver_variant = str(raw.get("stage1_solver_variant", "vbbr_brd")).strip().lower()
+    if stage1_solver_variant == "algorithm5":
+        stage1_solver_variant = "paper_iterative_pricing"
+
     cfg = StackelbergConfig(
         enabled=bool(raw.get("enabled", True)),
         initial_pE=float(raw.get("initial_pE", 0.5)),
@@ -217,7 +223,9 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         stage1_neighborhood_max_candidates=int(raw.get("stage1_neighborhood_max_candidates", 256)),
         gain_estimator_variant=str(raw.get("gain_estimator_variant", "boundary")).strip().lower(),
         gain_topk_k=int(raw.get("gain_topk_k", 4)),
-        stage1_solver_variant=str(raw.get("stage1_solver_variant", "vbbr_brd")).strip().lower(),
+        stage1_solver_variant=stage1_solver_variant,
+        paper_local_Q=int(raw.get("paper_local_Q", 2)),
+        paper_restricted_gap_tol=float(raw.get("paper_restricted_gap_tol", raw.get("vbbr_outer_gain_tol", 1e-7))),
         topk_brd_price_tol=float(raw.get("topk_brd_price_tol", 1e-6)),
         topk_brd_epsilon_tol=float(raw.get("topk_brd_epsilon_tol", 1e-7)),
         topk_brd_cycle_window=int(raw.get("topk_brd_cycle_window", 6)),
@@ -254,8 +262,12 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         raise ValueError("gain_estimator_variant must be 'boundary', 'refined_price', or 'topk_real_reval'.")
     if cfg.gain_topk_k <= 0:
         raise ValueError("gain_topk_k must be positive.")
-    if cfg.stage1_solver_variant not in {"algorithm5", "topk_brd", "vbbr_brd"}:
-        raise ValueError("stage1_solver_variant must be 'algorithm5', 'topk_brd', or 'vbbr_brd'.")
+    if cfg.stage1_solver_variant not in {"paper_iterative_pricing", "topk_brd", "vbbr_brd"}:
+        raise ValueError("stage1_solver_variant must be 'paper_iterative_pricing', 'topk_brd', or 'vbbr_brd'.")
+    if cfg.paper_local_Q < 0:
+        raise ValueError("paper_local_Q must be non-negative.")
+    if cfg.paper_restricted_gap_tol <= 0:
+        raise ValueError("paper_restricted_gap_tol must be positive.")
     if cfg.topk_brd_price_tol <= 0 or cfg.topk_brd_epsilon_tol <= 0:
         raise ValueError("topk_brd tolerances must be positive.")
     if cfg.topk_brd_cycle_window < 2:

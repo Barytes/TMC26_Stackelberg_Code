@@ -1,3 +1,5 @@
+"""Block A primary script: Stage II SCM social-cost trace vs centralized reference."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import (
     _solve_centralized_minlp,
     _solve_centralized_pyomo_scip,
@@ -17,12 +20,7 @@ from tmc26_exp.config import ExperimentConfig, StackelbergConfig, SystemConfig, 
 from tmc26_exp.model import UserBatch
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import (
-    GreedySelectionResult,
-    InnerSolveResult,
-    _build_data,
-    _heuristic_score_with_t,
-    _solve_fixed_set_inner_exact,
-    algorithm_1_distributed_primal_dual,
+    solve_stage2_scm,
 )
 
 
@@ -31,115 +29,6 @@ def _positive_float(raw: str) -> float:
     if value <= 0:
         raise argparse.ArgumentTypeError("Value must be > 0.")
     return value
-
-
-def _solve_inner(
-    users: UserBatch,
-    offloading_set: set[int],
-    pE: float,
-    pN: float,
-    system: SystemConfig,
-    cfg: StackelbergConfig,
-    inner_solver: str,
-) -> InnerSolveResult:
-    if inner_solver == "exact":
-        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
-        if inner is None:
-            raise RuntimeError("Exact inner solver failed for a fixed set; cannot continue in exact mode.")
-        return inner
-    if inner_solver == "primal_dual":
-        return algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
-    if inner_solver == "hybrid":
-        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
-        if inner is None:
-            inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
-        return inner
-    raise ValueError(f"Unknown inner_solver={inner_solver}")
-
-
-def _social_cost_from_inner(local_costs: np.ndarray, n_users: int, inner: InnerSolveResult) -> float:
-    outside = set(range(n_users)) - set(inner.offloading_set)
-    return inner.offloading_objective + (float(np.sum(local_costs[list(outside)])) if outside else 0.0)
-
-
-def algorithm_2_with_social_cost_trace(
-    users: UserBatch,
-    pE: float,
-    pN: float,
-    system: SystemConfig,
-    cfg: StackelbergConfig,
-    inner_solver: str = "hybrid",
-) -> tuple[GreedySelectionResult, list[float]]:
-    data = _build_data(users)
-    active_users: set[int] = set(range(users.n))
-    offloading_set: set[int] = set()
-
-    previous_ve = 0.0
-    last_added: int | None = None
-    iterations = 0
-    social_trace: list[float] = []
-
-    for t in range(cfg.greedy_max_iters):
-        inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-        ve = inner.offloading_objective
-
-        if t >= 1 and last_added is not None:
-            delta_true = ve - previous_ve - data.cl[last_added]
-            if delta_true >= 0.0:
-                offloading_set.discard(last_added)
-                active_users.discard(last_added)
-                inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-                ve = inner.offloading_objective
-
-        social_trace.append(float(_social_cost_from_inner(data.cl, users.n, inner)))
-
-        candidates = sorted(active_users - offloading_set)
-        if not candidates:
-            iterations = t + 1
-            break
-
-        if offloading_set:
-            lambda_F, lambda_B = inner.lambda_F, inner.lambda_B
-        else:
-            lambda_F, lambda_B = 0.0, 0.0
-
-        best_user = min(
-            candidates,
-            key=lambda j: _heuristic_score_with_t(data, j, pE + lambda_F, pN + lambda_B, system),
-        )
-        best_score = _heuristic_score_with_t(data, best_user, pE + lambda_F, pN + lambda_B, system)
-
-        if best_score < 0.0:
-            previous_ve = ve
-            offloading_set.add(best_user)
-            last_added = best_user
-            iterations = t + 1
-            continue
-
-        iterations = t + 1
-        break
-
-    final_inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-    final_set = final_inner.offloading_set
-    outside = set(range(users.n)) - set(final_set)
-    social_cost = (
-        final_inner.offloading_objective + float(np.sum(data.cl[list(outside)]))
-        if outside
-        else final_inner.offloading_objective
-    )
-
-    if social_trace:
-        social_trace[-1] = float(social_cost)
-    else:
-        social_trace.append(float(social_cost))
-
-    result = GreedySelectionResult(
-        offloading_set=final_set,
-        inner_result=final_inner,
-        social_cost=float(social_cost),
-        iterations=iterations,
-    )
-    return result, social_trace
 
 
 def _plot_trace(trace: list[float], centralized_social: float | None, out_path: Path) -> None:
@@ -187,6 +76,13 @@ def _parse_n_users_list(raw: str) -> list[int]:
     if any(v <= 0 for v in values):
         raise argparse.ArgumentTypeError("Each n in n-users-list must be > 0.")
     return values
+
+
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("Value must be a positive integer.")
+    return value
 
 
 def _sample_users_for_n(cfg: ExperimentConfig, n_users: int, seed: int) -> UserBatch:
@@ -284,17 +180,18 @@ def main() -> None:
         action="store_true",
         help="Run only Algorithm 2 (skip centralized baseline, useful for large n).",
     )
+    parser.add_argument(
+        "--centralized-max-n",
+        type=_positive_int,
+        default=None,
+        help="Optional maximum n for running the centralized reference.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     seed = cfg.seed if args.seed is None else int(args.seed)
 
-    out_dir = (
-        Path(args.out_dir)
-        if args.out_dir is not None
-        else _default_output_dir(cfg.output_dir)
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("run_stage2_social_cost_compare", args.out_dir)
     n_list = args.n_users_list if args.n_users_list is not None else [cfg.n_users]
 
     traces_by_n: dict[int, list[float]] = {}
@@ -312,17 +209,22 @@ def main() -> None:
 
     for n in n_list:
         users = _sample_users_for_n(cfg, n_users=n, seed=seed + n)
-        greedy_result, social_trace = algorithm_2_with_social_cost_trace(
+        greedy_result = solve_stage2_scm(
             users=users,
             pE=float(args.pE),
             pN=float(args.pN),
             system=cfg.system,
             cfg=cfg.stackelberg,
-            inner_solver=args.inner_solver,
+            inner_solver_mode=args.inner_solver,
         )
+        social_trace = list(greedy_result.social_cost_trace)
         centralized_social: float | None = None
         centralized_solver = "skipped"
-        run_centralized = (not args.skip_centralized) and (args.centralized_solver != "skip")
+        run_centralized = (
+            (not args.skip_centralized)
+            and (args.centralized_solver != "skip")
+            and (args.centralized_max_n is None or int(n) <= int(args.centralized_max_n))
+        )
         if run_centralized:
             if args.centralized_solver == "gekko":
                 centralized = _solve_centralized_minlp(
@@ -374,6 +276,12 @@ def main() -> None:
                 f"--- n={n} ---",
                 f"algorithm2_iterations = {greedy_result.iterations}",
                 f"algorithm2_final_social_cost = {float(greedy_result.social_cost):.10g}",
+                f"algorithm2_runtime_sec = {float(greedy_result.runtime_sec):.10g}",
+                f"algorithm2_rollbacks = {greedy_result.rollback_count}",
+                f"algorithm2_accepted_admissions = {greedy_result.accepted_admissions}",
+                f"algorithm2_inner_calls = {greedy_result.inner_call_count}",
+                f"algorithm2_final_offloading_size = {len(greedy_result.offloading_set)}",
+                f"algorithm2_used_exact_inner = {int(greedy_result.used_exact_inner)}",
                 f"centralized_social_cost = {central_str}",
                 f"gap_algorithm2_minus_centralized = {gap_str}",
                 f"centralized_solver = {centralized_solver}",

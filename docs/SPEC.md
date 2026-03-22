@@ -34,6 +34,12 @@ When there is any conflict, the priority order is:
 
 Legacy implementation names such as `vbbr`, `pbdr`, or old "verified-gap" labels must not redefine the paper narrative.
 
+Implementation note:
+
+- the repository now keeps two interchangeable Stage I pipelines behind `solve_stage1_pricing(...)`;
+- `paper_iterative_pricing` is the paper-facing pipeline and should be the default choice for paper-aligned experiments;
+- `vbbr_brd` remains available as a backup implementation for robustness checks, ablations, or fallback runs, but it should not replace the paper's main Stage I narrative in the main text.
+
 ---
 
 ## Core Claims to Validate
@@ -68,6 +74,12 @@ The experiments should validate the following claims.
    - provider costs `c_E` and `c_N`;
    - user-population distributions and heterogeneity levels.
 
+Stage I implementation policy for experiments:
+
+- main paper-facing Stage I figures should use `stage1_solver_variant = "paper_iterative_pricing"`;
+- if `vbbr_brd` is reported, it should be labeled as an alternative Stage I implementation path, not as the canonical paper algorithm;
+- direct comparisons between `paper_iterative_pricing` and `vbbr_brd` belong in supplementary diagnostics, robustness checks, or implementation notes rather than the main theorem-validation storyline.
+
 ---
 
 ## Baseline Taxonomy
@@ -89,6 +101,8 @@ Use the current paper's baseline grouping.
 - Rand
 
 Do not use old baseline groupings such as `PBRD` or `DRL` in the main paper-aligned narrative unless the paper source is explicitly revised.
+
+The figure-level canonical plan is frozen in `docs/FIGURE_SCRIPT_BLUEPRINT.md`. Workflow 5 should implement the public experiment entry points according to that one-figure-one-script mapping.
 
 ---
 
@@ -153,6 +167,11 @@ Baselines:
 
 - GSO on small instances;
 - GA, BO, MARL under comparable evaluation budgets where appropriate.
+
+Implementation rule:
+
+- Block C should treat `paper_iterative_pricing` as the primary proposed method;
+- `vbbr_brd` may be added as a supplementary implementation comparison, but should not displace the paper-facing trajectory as the main curve.
 
 ### Block D: Runtime and scalability
 
@@ -271,6 +290,8 @@ If secondary diagnostics are included, they should be labeled as supplementary.
 5. Keep Stage II and Stage I logically separated in reporting:
    Stage II validates the follower-side solution mechanism;
    Stage I validates the pricing-game structure and equilibrium computation.
+6. Every main figure in Block A-F should map to exactly one canonical script;
+   current multi-output scripts are reusable sources, not the final public figure interface.
 
 ---
 

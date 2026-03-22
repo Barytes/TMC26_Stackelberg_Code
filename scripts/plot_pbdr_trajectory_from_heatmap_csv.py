@@ -1,3 +1,5 @@
+"""Legacy auxiliary plotting helper for discrete PBRD trajectories on a heatmap CSV."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,6 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import run_discrete_br_dynamics
 
 
@@ -215,13 +218,7 @@ def main() -> None:
         mode=args.mode,
     )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = (
-        Path(args.out_dir)
-        if args.out_dir is not None
-        else Path("outputs") / f"pbdr_traj_{args.mode}_{timestamp}"
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir(f"pbdr_traj_{args.mode}", args.out_dir)
 
     fig_path = out_dir / "eps_heatmap_pbdr_trajectory.png"
     _plot_eps_with_trajectory(

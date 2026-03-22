@@ -1,3 +1,5 @@
+"""Block A primary script: empirical Stage II approximation ratio and theorem-bound check."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,6 +11,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import (
     _solve_centralized_minlp,
     _solve_centralized_pyomo_scip,
@@ -18,12 +21,7 @@ from tmc26_exp.config import ExperimentConfig, StackelbergConfig, SystemConfig, 
 from tmc26_exp.model import UserBatch, local_cost, theta
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import (
-    InnerSolveResult,
-    _build_data,
-    _heuristic_score_with_t,
-    _solve_fixed_set_inner_exact,
-    algorithm_1_distributed_primal_dual,
-    algorithm_2_heuristic_user_selection,
+    solve_stage2_scm,
 )
 
 
@@ -77,91 +75,6 @@ def _compute_delta_hat_star(users: UserBatch, pE: float, pN: float, system: Syst
     return float(np.max(delta_hat))
 
 
-def _solve_inner(
-    users: UserBatch,
-    offloading_set: set[int],
-    pE: float,
-    pN: float,
-    system: SystemConfig,
-    cfg: StackelbergConfig,
-    inner_solver: str,
-) -> InnerSolveResult:
-    if inner_solver == "exact":
-        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
-        if inner is None:
-            raise RuntimeError("Exact inner solver failed for a fixed set; cannot continue in exact mode.")
-        return inner
-    if inner_solver == "primal_dual":
-        return algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
-    if inner_solver == "hybrid":
-        inner = _solve_fixed_set_inner_exact(users, offloading_set, pE, pN, system)
-        if inner is None:
-            inner = algorithm_1_distributed_primal_dual(users, offloading_set, pE, pN, system, cfg)
-        return inner
-    raise ValueError(f"Unknown inner_solver={inner_solver}")
-
-
-def _social_cost_from_inner(local_costs: np.ndarray, n_users: int, inner: InnerSolveResult) -> float:
-    outside = set(range(n_users)) - set(inner.offloading_set)
-    return inner.offloading_objective + (float(np.sum(local_costs[list(outside)])) if outside else 0.0)
-
-
-def _algorithm2_social_cost(
-    users: UserBatch,
-    pE: float,
-    pN: float,
-    system: SystemConfig,
-    cfg: StackelbergConfig,
-    inner_solver: str,
-) -> float:
-    if inner_solver == "hybrid":
-        out = algorithm_2_heuristic_user_selection(users, pE, pN, system, cfg)
-        return float(out.social_cost)
-
-    data = _build_data(users)
-    active_users: set[int] = set(range(users.n))
-    offloading_set: set[int] = set()
-    previous_ve = 0.0
-    last_added: int | None = None
-
-    for _t in range(cfg.greedy_max_iters):
-        inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-        ve = inner.offloading_objective
-
-        if last_added is not None:
-            delta_true = ve - previous_ve - data.cl[last_added]
-            if delta_true >= 0.0:
-                offloading_set.discard(last_added)
-                active_users.discard(last_added)
-                inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-                ve = inner.offloading_objective
-
-        candidates = sorted(active_users - offloading_set)
-        if not candidates:
-            break
-
-        if offloading_set:
-            lambda_F, lambda_B = inner.lambda_F, inner.lambda_B
-        else:
-            lambda_F, lambda_B = 0.0, 0.0
-
-        best_user = min(
-            candidates,
-            key=lambda j: _heuristic_score_with_t(data, j, pE + lambda_F, pN + lambda_B, system),
-        )
-        best_score = _heuristic_score_with_t(data, best_user, pE + lambda_F, pN + lambda_B, system)
-
-        if best_score < 0.0:
-            previous_ve = ve
-            offloading_set.add(best_user)
-            last_added = best_user
-            continue
-        break
-
-    final_inner = _solve_inner(users, offloading_set, pE, pN, system, cfg, inner_solver)
-    return float(_social_cost_from_inner(data.cl, users.n, final_inner))
-
-
 def _run_centralized(
     users: UserBatch,
     pE: float,
@@ -191,6 +104,7 @@ def _write_points_csv(out_path: Path, rows: list[dict[str, float | int | str | b
         "V0",
         "V_DG",
         "V_Xstar",
+        "X_DG_size",
         "Xstar_size",
         "delta_hat_star",
         "bound",
@@ -198,6 +112,13 @@ def _write_points_csv(out_path: Path, rows: list[dict[str, float | int | str | b
         "slack",
         "violated",
         "valid",
+        "rollback_count",
+        "accepted_admissions",
+        "inner_call_count",
+        "runtime_sec",
+        "used_exact_inner",
+        "stage2_method",
+        "inner_solver_mode",
         "centralized_success",
         "centralized_solver",
     ]
@@ -220,6 +141,7 @@ def _read_points_csv(csv_path: Path) -> list[dict[str, float | int | str | bool]
                     "V0": float(r["V0"]) if r["V0"] else float("nan"),
                     "V_DG": float(r["V_DG"]) if r["V_DG"] else float("nan"),
                     "V_Xstar": float(r["V_Xstar"]) if r["V_Xstar"] else float("nan"),
+                    "X_DG_size": int(r["X_DG_size"]),
                     "Xstar_size": int(r["Xstar_size"]),
                     "delta_hat_star": float(r["delta_hat_star"]) if r["delta_hat_star"] else float("nan"),
                     "bound": float(r["bound"]) if r["bound"] else float("nan"),
@@ -227,6 +149,13 @@ def _read_points_csv(csv_path: Path) -> list[dict[str, float | int | str | bool]
                     "slack": float(r["slack"]) if r["slack"] else float("nan"),
                     "violated": str(r["violated"]).strip().lower() == "true",
                     "valid": str(r["valid"]).strip().lower() == "true",
+                    "rollback_count": int(r["rollback_count"]),
+                    "accepted_admissions": int(r["accepted_admissions"]),
+                    "inner_call_count": int(r["inner_call_count"]),
+                    "runtime_sec": float(r["runtime_sec"]) if r["runtime_sec"] else float("nan"),
+                    "used_exact_inner": str(r["used_exact_inner"]).strip().lower() == "true",
+                    "stage2_method": str(r["stage2_method"]),
+                    "inner_solver_mode": str(r["inner_solver_mode"]),
                     "centralized_success": str(r["centralized_success"]).strip().lower() == "true",
                     "centralized_solver": str(r["centralized_solver"]),
                 }
@@ -467,8 +396,15 @@ def main() -> None:
         csv_path = Path(args.replot_csv)
         if not csv_path.exists():
             raise FileNotFoundError(f"CSV not found: {csv_path}")
-        out_dir = Path(args.out_dir) if args.out_dir is not None else csv_path.parent
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if args.out_dir is not None:
+            out_dir = resolve_out_dir("run_stage2_approximation_ratio_replot", args.out_dir)
+        else:
+            try:
+                csv_path.parent.relative_to((Path(__file__).resolve().parents[1] / "outputs"))
+            except ValueError:
+                out_dir = resolve_out_dir("run_stage2_approximation_ratio_replot", None)
+            else:
+                out_dir = csv_path.parent
         rows = _read_points_csv(csv_path)
         plot_info = _plot_scatter(rows, out_dir / plot_name, transform=args.plot_transform)
         print(
@@ -477,8 +413,7 @@ def main() -> None:
         )
         return
 
-    out_dir = Path(args.out_dir) if args.out_dir is not None else _default_output_dir(cfg.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("run_stage2_approximation_ratio", args.out_dir)
 
     rows: list[dict[str, float | int | str | bool]] = []
     pE = float(args.pE)
@@ -491,7 +426,15 @@ def main() -> None:
         for trial in range(1, args.trials + 1):
             users = sample_users(cfg_n, rng)
             V0 = float(np.sum(local_cost(users)))
-            V_DG = float(_algorithm2_social_cost(users, pE, pN, cfg.system, cfg.stackelberg, args.inner_solver))
+            stage2_out = solve_stage2_scm(
+                users,
+                pE,
+                pN,
+                cfg.system,
+                cfg.stackelberg,
+                inner_solver_mode=args.inner_solver,
+            )
+            V_DG = float(stage2_out.social_cost)
             cs_out, cs_success = _run_centralized(users, pE, pN, cfg.system, cfg, args.centralized_solver)
 
             V_Xstar = float(cs_out.social_cost) if cs_success else float("nan")
@@ -521,6 +464,7 @@ def main() -> None:
                     "V0": float(V0),
                     "V_DG": float(V_DG),
                     "V_Xstar": float(V_Xstar),
+                    "X_DG_size": int(len(stage2_out.offloading_set)),
                     "Xstar_size": int(Xstar_size),
                     "delta_hat_star": float(delta_hat_star),
                     "bound": float(bound),
@@ -528,6 +472,13 @@ def main() -> None:
                     "slack": float(slack),
                     "violated": bool(violated),
                     "valid": bool(valid),
+                    "rollback_count": int(stage2_out.rollback_count),
+                    "accepted_admissions": int(stage2_out.accepted_admissions),
+                    "inner_call_count": int(stage2_out.inner_call_count),
+                    "runtime_sec": float(stage2_out.runtime_sec),
+                    "used_exact_inner": bool(stage2_out.used_exact_inner),
+                    "stage2_method": str(stage2_out.stage2_method),
+                    "inner_solver_mode": str(stage2_out.inner_solver_mode),
                     "centralized_success": bool(cs_success),
                     "centralized_solver": str(cs_out.meta.get("solver", args.centralized_solver)),
                 }

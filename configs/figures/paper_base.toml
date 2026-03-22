@@ -1,14 +1,14 @@
-run_name = "default_run"
+run_name = "paper_base"
 output_dir = "outputs"
-n_users = 100
-n_trials = 10
+n_users = 12
+n_trials = 20
 seed = 2026
 
 [system]
-F = 100.0
-B = 40.0
-cE = 0.01
-cN = 0.01
+F = 20.0
+B = 50.0
+cE = 0.1
+cN = 0.1
 
 [stackelberg]
 enabled = true
@@ -65,18 +65,24 @@ drl_gamma = 0.95
 drl_epsilon = 0.2
 market_max_iters = 80
 market_step_size = 0.2
+market_tol = 1.0e-5
 single_sp_max_iters = 200
 random_offloading_trials = 64
 random_offloading_prob = 0.5
 ubrd_max_iters = 200
 vi_max_iters = 200
 vi_step_size = 0.5
-vi_tol = 1e-5
+vi_tol = 1.0e-5
 penalty_outer_iters = 8
 penalty_inner_iters = 50
 penalty_init_rho = 0.1
 penalty_rho_scale = 4.0
-penalty_tol = 1e-4
+penalty_tol = 1.0e-4
+cs_use_minlp = false
+cs_fallback_to_enum = true
+gekko_time_limit = 60
+gekko_max_iter = 500
+gekko_mip_gap = 1.0e-4
 
 [detailed_experiment]
 emit_plan = true
@@ -93,34 +99,33 @@ metrics = [
 ]
 
 [price_grid.pE]
-min = 0.05
-max = 5.0
-points = 60
+min = 0.1
+max = 6.0
+points = 81
 
 [price_grid.pN]
-min = 0.05
-max = 5.0
-points = 60
+min = 0.1
+max = 6.0
+points = 81
 
 [user_distributions.w]
 kind = "uniform"
-low = 0.5
-high = 2.5
+low = 0.1
+high = 1.0
 
 [user_distributions.d]
 kind = "uniform"
 low = 1.0
-high = 10.0
+high = 5.0
 
 [user_distributions.fl]
-kind = "uniform"
-low = 0.5
-high = 1.2
+kind = "choice"
+values = [0.5, 0.8, 1.0, 1.2]
 
 [user_distributions.alpha]
 kind = "uniform"
-low = 10.0
-high = 15.0
+low = 1.0
+high = 2.0
 
 [user_distributions.beta]
 kind = "uniform"
@@ -129,20 +134,17 @@ high = 0.5
 
 [user_distributions.rho]
 kind = "uniform"
-low = 0.5
+low = 0.1
 high = 2.0
 
 [user_distributions.varpi]
-kind = "uniform"
-low = 0.8
-high = 1.2
+kind = "constant"
+value = 2.857142857142857
 
 [user_distributions.kappa]
-kind = "uniform"
-low = 0.01
-high = 0.05
+kind = "constant"
+value = 1.0e-27
 
 [user_distributions.sigma]
-kind = "uniform"
-low = 0.5
-high = 3.0
+kind = "constant"
+value = 1.0

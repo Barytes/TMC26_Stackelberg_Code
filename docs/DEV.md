@@ -322,6 +322,27 @@ boundary price `\hat p_k(Y | p_{-k})` 是：
 
 另外要注意，论文里 Stage I 的正式 gap 语言是 `NE gap` 与 boundary-price-restricted `NE gap`。如果代码或旧脚本里还出现 `verified epsilon` 之类的名字，应当视为历史实现命名，而不是论文定义。
 
+### 4.5 当前代码中的两条 Stage I pipeline
+
+当前 [stackelberg.py](/Users/beiyanliu/Desktop/TMC26_Stackelberg_Code/src/tmc26_exp/stackelberg.py) 里，`solve_stage1_pricing(...)` 下面保留了两条可切换的 Stage I 路线：
+
+- `paper_iterative_pricing`
+  - 论文主线实现；
+  - `Algorithm 3` 负责 boundary-price-based best-response estimation；
+  - 外层用论文当前的 iterative pricing loop 交替更新 ESP 和 NSP 价格；
+  - 新实验和论文主图应优先使用这条路线。
+- `vbbr_brd`
+  - 历史实现保留下来的备选路线；
+  - 仍然基于 boundary price 与 iterative dynamics，但包含额外的 heuristic design；
+  - 更适合当作 fallback、经验效果对照，或者 supplementary implementation comparison。
+
+因此，开发时要区分两种目标：
+
+- 如果目标是“论文口径是否实现正确”，优先检查 `paper_iterative_pricing`。
+- 如果目标是“经验上是否有更稳定或更快的备选实现”，可以同时保留并评估 `vbbr_brd`。
+
+配置上，这两条路线通过 `stage1_solver_variant` 切换。当前配置文件可能仍默认 `vbbr_brd` 以保持旧实验连续性，但论文对齐实验应显式改成 `paper_iterative_pricing`。
+
 ## 5. 对现有代码结构最有用的映射
 
 结合当前仓库，比较自然的职责划分是：

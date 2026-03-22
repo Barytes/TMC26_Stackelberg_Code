@@ -1,3 +1,5 @@
+"""Block B auxiliary script: exact-CS-assisted Stage I heatmap diagnostics."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,6 +15,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import _solve_centralized_minlp
 from tmc26_exp.config import BaselineConfig, load_config
 from tmc26_exp.model import UserBatch
@@ -276,10 +279,7 @@ def main() -> None:
     users = sample_users(cfg_users, rng)
     base_cfg = _build_gekko_baseline_cfg(cfg.baselines, args)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out_dir = Path(cfg.output_dir) / f"run_stage1_price_heatmaps_cs_gekko_{timestamp}"
-    out_dir = Path(args.out_dir) if args.out_dir is not None else default_out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("run_stage1_price_heatmaps_cs_gekko", args.out_dir)
 
     pE_grid = np.linspace(0.0, float(args.pEmax), int(args.pE_points))
     pN_grid = np.linspace(0.0, float(args.pNmax), int(args.pN_points))

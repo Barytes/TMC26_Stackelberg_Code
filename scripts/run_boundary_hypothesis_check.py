@@ -1,8 +1,10 @@
+"""Block B primary script: Stage I boundary-price, switching-set, and candidate-family diagnostics."""
+
 from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import math
 from pathlib import Path
@@ -16,6 +18,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import evaluate_stage1_price_grid
 from tmc26_exp.config import StackelbergConfig, SystemConfig, load_config
 from tmc26_exp.simulator import sample_users
@@ -1105,6 +1108,7 @@ def main() -> None:
         description="Standalone diagnostic script for testing DG slice boundaries against old boundary points and a closed-form hypothesis."
     )
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
+    parser.add_argument("--n-users", type=_positive_int, default=None, help="Optional user-count override.")
     parser.add_argument("--seed", type=int, default=None, help="Optional seed override.")
     parser.add_argument("--start-pE", type=float, default=0.5, help="Start pE for the two slices.")
     parser.add_argument("--start-pN", type=float, default=0.5, help="Start pN for the two slices.")
@@ -1122,6 +1126,8 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    if args.n_users is not None:
+        cfg = replace(cfg, n_users=int(args.n_users))
     seed = int(cfg.seed if args.seed is None else args.seed)
     rng = np.random.default_rng(seed)
     users = sample_users(cfg, rng)
@@ -1131,10 +1137,7 @@ def main() -> None:
     start_pE = max(float(args.start_pE), float(system.cE))
     start_pN = max(float(args.start_pN), float(system.cN))
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out = Path("outputs") / f"boundary_hypothesis_check_{timestamp}"
-    out_dir = Path(args.out_dir) if args.out_dir else default_out
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("boundary_hypothesis_check", args.out_dir)
 
     start_eval = _evaluate_slice_point("E", start_pE, start_pN, users, system, stack_cfg)
     current_set = start_eval.offloading_set

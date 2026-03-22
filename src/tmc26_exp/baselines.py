@@ -13,9 +13,9 @@ from scipy.optimize import minimize, minimize_scalar
 from .config import BaselineConfig, StackelbergConfig, SystemConfig
 from .model import UserBatch, local_cost, theta
 from .stackelberg import (
+    _refine_price_for_fixed_set,
     algorithm_2_heuristic_user_selection,
     algorithm_3_gain_approximation,
-    algorithm_4_optimal_rne_sampling,
     run_stage1_solver,
 )
 
@@ -2214,7 +2214,7 @@ def baseline_stage1_drl(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Joint-action tabular Q-learning with provider-specific rewards."""
+    """Legacy joint-action tabular RL proxy, not a full paper-facing MARL wrapper."""
     grid_e = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.drl_price_levels)
     grid_n = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.drl_price_levels)
     action_deltas = (-1, 0, 1)
@@ -2307,12 +2307,7 @@ def baseline_market_equilibrium(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """
-    Market Equilibrium baseline using tatonnement-style price adjustment.
-
-    Prices are adjusted based on excess demand: if demand exceeds capacity,
-    prices increase; if demand is below capacity, prices decrease.
-    """
+    """Paper-facing ME baseline using tatonnement-style price adjustment."""
     pE = max(system.cE, stack_cfg.initial_pE)
     pN = max(system.cN, stack_cfg.initial_pN)
     data = _build_data(users)
@@ -2356,7 +2351,7 @@ def baseline_single_sp(
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
     """
-    Single SP baseline with personalized incentive-compatible pricing.
+    Paper-facing SingleSP baseline with personalized incentive-compatible pricing.
 
     Mechanism (from Tutuncuoglu et al. 2024):
     1. SP selects a subset of users to serve
@@ -2444,23 +2439,23 @@ def baseline_random_offloading(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
+    """Paper-facing Rand baseline based on randomized source offloading sets."""
     rng = np.random.default_rng(base_cfg.random_seed + 707)
     best: BaselineOutcome | None = None
     for _ in range(base_cfg.random_offloading_trials):
         mask = rng.uniform(size=users.n) < base_cfg.random_offloading_prob
         off = tuple(np.nonzero(mask)[0].tolist())
-        rne = algorithm_4_optimal_rne_sampling(
+        price = _refine_price_for_fixed_set(
             users,
             off,
             (max(system.cE, stack_cfg.initial_pE), max(system.cN, stack_cfg.initial_pN)),
             system,
-            stack_cfg,
         )
         out = _evaluate(
             users,
-            rne.offloading_set,
-            rne.price[0],
-            rne.price[1],
+            off,
+            price[0],
+            price[1],
             system,
             stack_cfg,
             "RandomOffloading",
@@ -2497,6 +2492,7 @@ def run_all_baselines(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> list[BaselineOutcome]:
+    """Internal mixed launcher spanning proposal, formal baselines, and auxiliary legacy methods."""
     outcomes: list[BaselineOutcome] = []
     init_pE = max(system.cE, stack_cfg.initial_pE)
     init_pN = max(system.cN, stack_cfg.initial_pN)
@@ -2519,4 +2515,3 @@ def run_all_baselines(
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_random_offloading(users, system, stack_cfg, base_cfg))
     return outcomes
-

@@ -1,0 +1,7 @@
+from __future__ import annotations
+
+from _figure_missing_impl import main_B6 as main
+
+
+if __name__ == "__main__":
+    main()

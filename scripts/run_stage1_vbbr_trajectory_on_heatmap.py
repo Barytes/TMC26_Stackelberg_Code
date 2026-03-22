@@ -1,3 +1,5 @@
+"""Block C primary script: Stage I pricing trajectory on a heatmap background."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,10 +12,11 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import evaluate_stage1_price_grid
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
-from tmc26_exp.stackelberg import run_stage1_solver
+from tmc26_exp.stackelberg import solve_stage1_pricing
 
 
 def _positive_float(raw: str) -> float:
@@ -117,7 +120,7 @@ def _plot_eps_with_trajectory(
         cmap="magma",
     )
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("epsilon")
+    cbar.set_label("restricted_gap")
 
     se_mask = eps <= eps_tol
     se_n_idx, se_e_idx = np.nonzero(se_mask)
@@ -135,7 +138,7 @@ def _plot_eps_with_trajectory(
 
     pE_path = np.asarray([p[0] for p in trajectory], dtype=float)
     pN_path = np.asarray([p[1] for p in trajectory], dtype=float)
-    ax.plot(pE_path, pN_path, color="cyan", linewidth=1.4, alpha=0.9, label="VBBR-BRD path")
+    ax.plot(pE_path, pN_path, color="cyan", linewidth=1.4, alpha=0.9, label="pricing trajectory")
     ax.scatter(
         pE_path,
         pN_path,
@@ -149,7 +152,7 @@ def _plot_eps_with_trajectory(
     ax.scatter([pE_path[0]], [pN_path[0]], s=75, c="lime", edgecolors="black", linewidths=0.6, label="start")
     ax.scatter([pE_path[-1]], [pN_path[-1]], s=120, marker="*", c="red", edgecolors="black", linewidths=0.6, label="end")
 
-    ax.set_title("VBBR-BRD trajectory on epsilon heatmap")
+    ax.set_title("Stage-I pricing trajectory on restricted-gap heatmap")
     ax.set_xlabel("pE")
     ax.set_ylabel("pN")
     ax.legend(loc="upper right", fontsize=8, frameon=True)
@@ -177,15 +180,16 @@ def _save_trajectory_csv(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot VBBR-BRD Stage-I trajectory on epsilon heatmap."
+        description="Plot the Stage-I pricing trajectory on a restricted-gap heatmap."
     )
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
+    parser.add_argument("--n-users", type=_positive_int, default=None, help="Optional user-count override.")
     parser.add_argument("--seed", type=int, default=None, help="Optional sampling seed override.")
     parser.add_argument(
         "--csv",
         type=str,
         default=None,
-        help="Optional existing price_grid_metrics.csv. If set, reuse this epsilon grid instead of recomputing heatmap.",
+        help="Optional existing price_grid_metrics.csv. If set, reuse this restricted-gap grid instead of recomputing.",
     )
     parser.add_argument(
         "--summary",
@@ -277,6 +281,8 @@ def main() -> None:
     if args.config == "configs/default.toml" and "config" in summary:
         config_path = summary["config"]
     cfg = load_config(config_path)
+    if args.n_users is not None:
+        cfg = replace(cfg, n_users=int(args.n_users))
 
     seed = int(args.seed) if args.seed is not None else int(summary.get("seed", cfg.seed))
     pEmax = float(args.pEmax) if args.pEmax is not None else float(cfg.baselines.max_price_E)
@@ -285,20 +291,7 @@ def main() -> None:
     rng = np.random.default_rng(seed)
     users = sample_users(cfg, rng)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_root = Path("outputs")
-    default_out_dir = output_root / f"run_stage1_vbbr_traj_on_heatmap_{timestamp}"
-    if args.out_dir is None:
-        out_dir = default_out_dir
-    else:
-        requested = Path(args.out_dir)
-        if requested.is_absolute():
-            out_dir = requested
-        elif requested.parts and requested.parts[0] == output_root.name:
-            out_dir = requested
-        else:
-            out_dir = output_root / requested
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("run_stage1_vbbr_traj_on_heatmap", args.out_dir)
 
     if args.csv is None:
         started_at = time.perf_counter()
@@ -372,7 +365,7 @@ def main() -> None:
         vbbr_updates["vbbr_outer_update_mode"] = str(args.vbbr_outer_update_mode)
     if vbbr_updates:
         stack_cfg = replace(stack_cfg, **vbbr_updates)
-    result = run_stage1_solver(users, cfg.system, stack_cfg)
+    result = solve_stage1_pricing(users, cfg.system, stack_cfg)
     trajectory = _trajectory_points(result)
 
     fig_path = out_dir / "eps_heatmap_vbbr_trajectory.png"
@@ -423,9 +416,12 @@ def main() -> None:
         f"global_min_eps = {float(eps[min_j, min_i]):.10g}",
         f"global_argmin_pE = {float(pE_grid[min_i]):.10g}",
         f"global_argmin_pN = {float(pN_grid[min_j]):.10g}",
+        f"stackelberg_restricted_gap = {float(result.restricted_gap):.10g}",
+        f"stackelberg_stage1_method = {result.stage1_method}",
         f"stackelberg_stopping_reason = {result.stopping_reason}",
         f"stackelberg_outer_iterations = {result.outer_iterations}",
         f"stackelberg_stage2_oracle_calls = {result.stage2_oracle_calls}",
+        f"stackelberg_final_stage2_offloading_size = {len(result.final_stage2_result.offloading_set) if result.final_stage2_result is not None else len(result.offloading_set)}",
     ]
     (out_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
     print(f"Done. Outputs written to: {out_dir}")

@@ -1,3 +1,5 @@
+"""Block C auxiliary plotting helper for Stage I trajectory comparisons on a known heatmap."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,10 +14,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import run_stage1_epec_diagonalization, run_stage1_genetic_algorithm
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
-from tmc26_exp.stackelberg import run_stage1_solver
+from tmc26_exp.stackelberg import solve_stage1_pricing
 
 
 def _positive_int(raw: str) -> int:
@@ -431,6 +434,14 @@ def _plot_compare(
             label=f"low-gap set (surface<={eps_tol:.2g})",
         )
 
+    legend_labels = {
+        "VBBR": "proposed iterative-pricing",
+        "BO": "BO",
+        "BO-ONLINE": "BO-online",
+        "GA": "GA",
+        "EPEC-DIAG": "EPEC-diag",
+        "DRL": "MARL proxy (DRL)",
+    }
     styles = {
         "VBBR": {"color": "cyan", "linestyle": "-", "linewidth": 1.8},
         "BO": {"color": "gold", "linestyle": "--", "linewidth": 1.5},
@@ -455,7 +466,7 @@ def _plot_compare(
             linestyle=style["linestyle"],
             linewidth=style["linewidth"],
             alpha=0.95,
-            label=f"{name} path",
+            label=f"{legend_labels[name]} path",
         )
         ax.scatter([pE[0]], [pN[0]], c=style["color"], s=50, marker="o", edgecolors="black", linewidths=0.5)
         ax.scatter([pE[-1]], [pN[-1]], c=style["color"], s=70, marker="X", edgecolors="black", linewidths=0.5)
@@ -494,6 +505,7 @@ def main() -> None:
     )
     parser.add_argument("--csv", type=str, required=True, help="Path to price_grid_metrics.csv.")
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
+    parser.add_argument("--n-users", type=_positive_int, default=None, help="Optional user-count override.")
     parser.add_argument("--summary", type=str, default=None, help="Optional summary.txt for seed/config fallback.")
     parser.add_argument("--seed", type=int, default=None, help="Override seed for VBBR user sampling.")
     parser.add_argument(
@@ -595,15 +607,14 @@ def main() -> None:
     if args.config == "configs/default.toml" and "config" in summary:
         config_path = summary["config"]
     cfg = load_config(config_path)
+    if args.n_users is not None:
+        cfg = replace(cfg, n_users=int(args.n_users))
 
     seed = int(args.seed) if args.seed is not None else int(summary.get("seed", cfg.seed))
     eps_tol = float(args.eps_tol) if args.eps_tol is not None else float(summary.get("eps_tol", 1e-12))
     baselines = _parse_baselines(args.baselines)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out = Path("outputs") / f"stage1_traj_compare_{timestamp}"
-    out_dir = Path(args.out_dir) if args.out_dir else default_out
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("stage1_traj_compare", args.out_dir)
 
     trajectories: dict[str, list[tuple[float, float]]] = {}
     users = None
@@ -640,7 +651,7 @@ def main() -> None:
         stack_cfg = replace(cfg.stackelberg, stage1_solver_variant="vbbr_brd")
         if args.search_max_iters is not None:
             stack_cfg = replace(stack_cfg, search_max_iters=int(args.search_max_iters))
-        res = run_stage1_solver(ensure_users(), cfg.system, stack_cfg)
+        res = solve_stage1_pricing(ensure_users(), cfg.system, stack_cfg)
         vbbr_traj = _trajectory_points(res)
         trajectories["VBBR"] = vbbr_traj
         meta_lines.extend(
@@ -648,6 +659,8 @@ def main() -> None:
                 "vbbr_source = recomputed",
                 f"vbbr_outer_iterations = {res.outer_iterations}",
                 f"vbbr_stage2_oracle_calls = {res.stage2_oracle_calls}",
+                f"vbbr_restricted_gap = {float(res.restricted_gap):.10g}",
+                f"vbbr_stage1_method = {res.stage1_method}",
                 f"vbbr_stopping_reason = {res.stopping_reason}",
             ]
         )
@@ -810,8 +823,12 @@ def main() -> None:
         trajectories=trajectories,
         eps_tol=eps_tol,
         out_path=fig_path,
-        cbar_label="epsilon" if args.surface == "real_gap" else "epsilon_proxy",
-        title=f"Stage-I trajectories on {'epsilon' if args.surface == 'real_gap' else 'epsilon proxy'} heatmap",
+        cbar_label="restricted_gap" if args.surface == "real_gap" else "restricted_gap_proxy",
+        title=(
+            "Stage-I trajectories on restricted-gap heatmap"
+            if args.surface == "real_gap"
+            else "Stage-I trajectories on restricted-gap proxy heatmap"
+        ),
     )
 
     for name, traj in trajectories.items():

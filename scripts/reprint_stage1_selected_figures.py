@@ -1,3 +1,5 @@
+"""Helper script for reprinting selected Stage I boundary and slice figures from prior outputs."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts._figure_wrapper_utils import resolve_out_dir
 from scripts.run_boundary_hypothesis_check import _scan_exact_boundaries
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
@@ -217,8 +220,7 @@ def main() -> None:
 
     csv_path = Path(args.csv)
     boundary_dir = Path(args.boundary_dir)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("reprint_stage1_selected_figures", args.out_dir)
 
     pE_grid, pN_grid, esp_grid, nsp_grid = _load_grid_csv(csv_path)
     summary = _load_summary_map(boundary_dir / "summary.txt")

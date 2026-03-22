@@ -1,6 +1,9 @@
+"""Block B auxiliary script: Stage I revenue and gap heatmap diagnostics."""
+
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 import time
 from datetime import datetime
@@ -10,6 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+from _figure_wrapper_utils import resolve_out_dir
 from tmc26_exp.baselines import evaluate_stage1_price_grid
 from tmc26_exp.config import load_config
 from tmc26_exp.simulator import sample_users
@@ -141,9 +145,10 @@ def _write_grid_csv(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot ESP/NSP revenue and epsilon heatmaps on [0,pEmax] x [0,pNmax]."
+        description="Plot Stage-I revenue and restricted-gap heatmaps on [0,pEmax] x [0,pNmax]."
     )
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
+    parser.add_argument("--n-users", type=_positive_int, default=None, help="Optional user-count override.")
     parser.add_argument("--pEmax", type=_positive_float, required=True, help="Upper bound for pE axis.")
     parser.add_argument("--pNmax", type=_positive_float, required=True, help="Upper bound for pN axis.")
     parser.add_argument("--pE-points", type=_min_two_int, default=81, help="Number of pE grid points.")
@@ -183,14 +188,13 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    if args.n_users is not None:
+        cfg = replace(cfg, n_users=int(args.n_users))
     seed = cfg.seed if args.seed is None else int(args.seed)
     rng = np.random.default_rng(seed)
     users = sample_users(cfg, rng)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    default_out_dir = Path(cfg.output_dir) / f"run_stage1_price_heatmaps_{timestamp}"
-    out_dir = Path(args.out_dir) if args.out_dir is not None else default_out_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir("run_stage1_price_heatmaps", args.out_dir)
 
     started_at = time.perf_counter()
 
@@ -273,8 +277,8 @@ def main() -> None:
         values=grid.eps,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
-        title="Epsilon Heatmap",
-        cbar_label="epsilon",
+        title="Restricted-Gap Heatmap",
+        cbar_label="restricted_gap",
         out_path=out_dir / "eps_heatmap.png",
         cmap="magma",
         eq_mask=eq_mask,
@@ -284,8 +288,8 @@ def main() -> None:
         values=eps_proxy,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
-        title="Epsilon Proxy Heatmap",
-        cbar_label="epsilon_proxy",
+        title="Restricted-Gap Proxy Heatmap",
+        cbar_label="restricted_gap_proxy",
         out_path=out_dir / "eps_proxy_heatmap.png",
         cmap="inferno",
         eq_mask=eq_mask,
