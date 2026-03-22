@@ -1,104 +1,83 @@
 # TMC26 Stackelberg Experiment Code
 
-This repository provides a compact Python implementation for the paper *Strategic User Offloading and Service Provider Pricing in Mobile Edge Computing*.
+This repository contains experiment infrastructure for the paper *Strategic User Offloading and Service Provider Pricing in Mobile Edge Computing*.
 
----
+The latest source of truth is `TMC26_Stackelberg.tex`. Some scripts and configuration keys still carry legacy names from earlier implementation stages, but the documentation in this repository follows the current paper terminology.
 
-## Experiment Scripts (17 Figures)
+## Paper Structure
 
-The repository includes comprehensive experiment scripts covering all paper figures. See `docs/experiment_figures.md` for full details.
+The paper studies a two-stage multi-leader multi-follower Stackelberg game.
 
-### Phase 1: Stage I Core Experiments (Figures 5-9)
+- Stage I: the ESP and NSP strategically price computation and bandwidth resources.
+- Stage II: users jointly decide whether to offload and how much computation and bandwidth to purchase under coupled capacity constraints.
 
-| Figure | Script | Description |
-|--------|--------|-------------|
-| Figure 5 | `run_stage1_deviation_gap_convergence.py` | Algorithm 5 epsilon convergence |
-| Figure 6 | `run_stage1_boundary_visualization.py` | Price space boundary + trajectory |
-| Figure 7 | `run_stage1_gain_approximation_accuracy.py` | Algorithm 3 gain approximation |
-| Figure 8 | `run_stage1_candidate_family_hit_rate.py` | Candidate family N(p) hit rate |
-| Figure 9 | `run_stage1_scalability.py` | Stage I scalability |
+The current paper's algorithmic structure is:
 
-### Phase 2: Stage II Completion (Figures 1-4)
+- Stage II SCM solver formed by:
+  - Algorithm 2 for offloading-user selection with rollback
+  - Algorithm 1 for the inner resource-allocation subproblem
+- Stage I restricted pricing-space analysis with fixed-set closed forms
+- boundary-price-based best-response estimation
+- iterative pricing for an epsilon-approximate Nash equilibrium of the Stage I pricing game
 
-| Figure | Script | Description |
-|--------|--------|-------------|
-| Figure 1 | `run_stage2_convergence_plot.py` | Iteration convergence |
-| Figure 2 | `run_stage2_approximation_ratio.py` | Theorem 2 validation |
-| Figure 3 | `run_stage2_communication_rounds.py` | Communication rounds |
-| Figure 4 | `run_stage2_exploitability_comparison.py` | Exploitability comparison |
-
-### Phase 3: Strategic Settings (Figures 10-13)
-
-| Figure | Script | Description |
-|--------|--------|-------------|
-| Figure 10 | `run_strategic_social_cost.py` | User social cost |
-| Figure 11 | `run_strategic_joint_revenue.py` | Provider revenue |
-| Figure 12 | `run_strategic_pareto_tradeoff.py` | Pareto tradeoff |
-| Figure 13 | `run_strategic_fb_sensitivity.py` | F/B sensitivity |
-
-### Phase 4: Ablation Studies (Figures 14-15)
-
-| Figure | Script | Description |
-|--------|--------|-------------|
-| Figure 14 | `run_ablation_L_sensitivity.py` | Sampling density L |
-| Figure 15 | `run_ablation_guided_search.py` | Guided search ablation |
-
-### Phase 5: Appendix (A1-A2)
-
-| Figure | Script | Description |
-|--------|--------|-------------|
-| Appendix A1 | `run_appendix_final_epsilon_vs_users.py` | Final epsilon scaling |
-| Appendix A2 | `run_appendix_exploitability_vs_users.py` | Full exploitability |
-
-### Quick Test
-
-```bash
-# Stage I
-uv run python scripts/run_stage1_deviation_gap_convergence.py --trials 3
-uv run python scripts/run_stage1_scalability.py --trials 3
-
-# Stage II
-uv run python scripts/run_stage2_convergence_plot.py --trials 3
-
-# Strategic
-uv run python scripts/run_strategic_social_cost.py --trials 5
-
-# Ablation
-uv run python scripts/run_ablation_L_sensitivity.py --trials 3
-```
-
----
-
-## 1) Environment
+## Environment
 
 ```bash
 uv sync
 ```
 
-## 2) Run
+## Main Run
 
 ```bash
 uv run tmc26-exp --config configs/default.toml
 ```
 
-By default this command:
-- computes all configured metric surfaces
-- runs the Stackelberg guided-search pipeline once on one sampled user batch
-- emits detailed experiment plan files only (does not run detailed heavy experiments)
+If the entry point is unavailable in your environment, use:
 
-Outputs:
-- `raw_results.csv` (per-trial/per-method records)
-- `summary_by_method.csv` (mean/std summary)
-- `run_meta.txt`
+```bash
+uv run python -m tmc26_exp --config configs/default.toml
+```
 
-## 4) Project structure
+This command currently does three things:
+
+- computes configured simulation-based metric surfaces;
+- runs the configured Stage I solver on one sampled user batch if `[stackelberg].enabled = true`;
+- optionally emits a non-executed detailed experiment plan.
+
+Typical outputs in `outputs/<run_name>/`:
+
+- `metrics_summary.txt`
+- `*.csv`, `*_heatmap.png`, `*_contour.png` for metric surfaces
+- `stackelberg_summary.txt`
+- `stackelberg_trajectory.csv`
+- `stackelberg_allocation.csv`
+- `baselines_summary.csv` when baselines are enabled
+
+## Repository Layout
 
 ```text
 .
 ├── configs/
-│   └── default.toml
+│   ├── default.toml
+│   └── *.toml
+├── docs/
+│   ├── DEV.md
+│   ├── SPEC.md
+│   └── md_alignment_audit.md
+├── scripts/
+│   ├── run_stage2_social_cost_compare.py
+│   ├── run_stage2_approximation_ratio.py
+│   ├── run_boundary_hypothesis_check.py
+│   ├── run_stage1_price_heatmaps.py
+│   ├── run_stage1_price_heatmaps_cs_gekko.py
+│   ├── run_stage1_vbbr_trajectory_on_heatmap.py
+│   ├── run_algorithm2_exploitability_vs_users.py
+│   ├── plot_stage1_trajectories_on_heatmap.py
+│   ├── plot_pbdr_trajectory_from_heatmap_csv.py
+│   └── reprint_stage1_selected_figures.py
 ├── src/
 │   └── tmc26_exp/
+│       ├── baselines.py
 │       ├── cli.py
 │       ├── config.py
 │       ├── distributions.py
@@ -107,39 +86,79 @@ Outputs:
 │       ├── plotting.py
 │       ├── simulator.py
 │       └── stackelberg.py
-├── pyproject.toml
 └── TMC26_Stackelberg.tex
 ```
 
-## 5) Outputs
+## Current Script Inventory
 
-All outputs are written to `outputs/<run_name>/`.
+The repository does not currently expose a one-to-one "all paper figures" runner matrix. Instead, it contains targeted scripts for diagnostics and figure construction.
 
-Metric outputs:
-- `metrics_summary.txt`
-- `*.csv` metric tables (`pE,pN,value_mean,value_std`)
-- `*_heatmap.png`, `*_contour.png`
+Stage II focused scripts:
 
-Stackelberg outputs (when `[stackelberg].enabled = true`):
-- `stackelberg_summary.txt`
-- `stackelberg_trajectory.csv`
-- `stackelberg_allocation.csv`
+- `scripts/run_stage2_social_cost_compare.py`
+- `scripts/run_stage2_approximation_ratio.py`
+- `scripts/run_algorithm2_exploitability_vs_users.py`
 
-Baseline outputs (when `[baselines].enabled = true` or `--run-baselines`):
-- `baselines_summary.csv`
+Stage I focused scripts:
 
+- `scripts/run_boundary_hypothesis_check.py`
+- `scripts/run_stage1_price_heatmaps.py`
+- `scripts/run_stage1_price_heatmaps_cs_gekko.py`
+- `scripts/run_stage1_vbbr_trajectory_on_heatmap.py`
 
+Plotting and reprint helpers:
 
-## 7) Configuration
+- `scripts/plot_stage1_trajectories_on_heatmap.py`
+- `scripts/plot_pbdr_trajectory_from_heatmap_csv.py`
+- `scripts/reprint_stage1_selected_figures.py`
 
-Main sections in `configs/default.toml`:
-- `[price_grid]`: metric visualization range
-- `[user_distributions]`: user parameter sampling
-- `[system]`: `F, B, cE, cN`
-- `[stackelberg]`: Algorithm 1~5 hyper-parameters
-- `[baselines]`: all baseline methods hyper-parameters
-- `[detailed_experiment]`: detailed plan generation controls
+Some filenames still use legacy names such as `vbbr` or `pbdr`. Read them according to the current paper's Stage I boundary-price and trajectory diagnostics, not as authoritative paper terminology.
 
-Set `[stackelberg].enabled = false` if you only want metric surfaces.
-Set `[baselines].enabled = true` to run baseline methods on the sampled batch.
-Detailed experiment code is provided but must be executed manually on high-compute hardware.
+For Stage II, read the scripts as diagnostics for the integrated SCM solution route rather than as separate paper tracks for Algorithm 1 and Algorithm 2.
+
+## Configuration
+
+The main configuration file is `configs/default.toml`.
+
+Important sections:
+
+- top-level run controls: `run_name`, `output_dir`, `n_users`, `n_trials`, `seed`
+- `[system]`: system capacities and provider costs
+- `[stackelberg]`: Stage I and Stage II solver hyper-parameters
+- `[baselines]`: baseline method settings
+- `[detailed_experiment]`: plan emission settings
+- `[price_grid]`: diagnostic surface ranges
+- `[user_distributions]`: random-instance generation
+
+When interpreting configuration names, prefer the paper's current concepts over legacy key names. For example, the paper's formal Stage I metrics are the NE gap and the boundary-price-restricted NE gap, even if some implementation knobs still use older naming conventions.
+
+## Baselines
+
+The current paper groups baselines into two categories.
+
+Stackelberg-equilibrium baselines:
+
+- GSO
+- GA
+- BO
+- MARL
+
+Strategic-setting baselines:
+
+- ME
+- SingleSP
+- Coop
+- Rand
+
+The repository may also contain auxiliary or legacy diagnostics beyond this list. Those should not be treated as the paper's primary baseline taxonomy unless the paper source is updated accordingly.
+
+## Documentation
+
+Use the following order when reading the repository:
+
+1. `TMC26_Stackelberg.tex`
+2. `docs/SPEC.md`
+3. `docs/DEV.md`
+4. `docs/md_alignment_audit.md`
+
+If a script name, config key, or old note conflicts with the paper, follow the paper.

@@ -7,6 +7,12 @@
 
 对实验代码最关键的理解是：`Stage II` 不是“任意一个用户均衡”，而是要取 `SOE`，即 social cost 最小的那个 GNE。`Stage I` 的收益、边界价、近似 NE 都建立在这个选择之上。
 
+如果按论文口径组织实验与实现，`Stage II` 最好被视为 **Algorithm 2 + Algorithm 1 组成的整体 SCM 求解路线**：
+
+- Algorithm 2 负责 outer offloading-set selection；
+- Algorithm 1 负责被反复调用的 inner resource allocation；
+- 报告和文档层面不需要把 Algorithm 1 单独拔出来当成一条独立实验主线。
+
 ## 1. 先固定的核心量
 
 建议在 `model.py` 层统一预计算：
@@ -36,6 +42,12 @@ C_{i,\mathrm{unc}}^e = 2 \sqrt{\alpha_i w_i p_E} + 2 \sqrt{\theta_i p_N}
 
 而不是只做“用户各自 best response 到稳定”为止。前者对应论文，后者不一定对应 SOE。
 
+如果是实验脚本或汇总接口，建议更进一步直接抽象成：
+
+`(users, system, pE, pN) -> SCM / SOE solve result`
+
+这样更符合论文当前的叙事：Stage II 是一个 integrated follower-side solver，而不是拆开的两段独立故事。
+
 ### 2.2 固定卸载集合 `X` 的内层资源分配
 
 给定非空卸载集合 `X`，内层问题是：
@@ -50,7 +62,10 @@ C_{i,\mathrm{unc}}^e = 2 \sqrt{\alpha_i w_i p_E} + 2 \sqrt{\theta_i p_N}
 - `sum_i b_i <= B`
 - 对 `i in X` 满足 individual rationality：`C_i^e <= C_i^l`
 
-论文主文给了 primal-dual 算法，但附录更适合实验代码：固定集合时有闭式解。
+论文主文先给了 Algorithm 1 的 primal-dual 路线；随后在 Stage I 的 restricted pricing-space 分析里，又给了固定集合下的闭式表达。实现时两条线都要保留：
+
+- Algorithm 2 + Algorithm 1 对应论文正式的 Stage II 求解框架；
+- fixed-set closed form 对应论文正式的 Stage I 结构分析与 boundary-price 构造。
 
 定义：
 
@@ -305,6 +320,8 @@ boundary price `\hat p_k(Y | p_{-k})` 是：
 - 同一实例上的重复价格评估缓存
 - 候选集合和边界价的诊断输出
 
+另外要注意，论文里 Stage I 的正式 gap 语言是 `NE gap` 与 boundary-price-restricted `NE gap`。如果代码或旧脚本里还出现 `verified epsilon` 之类的名字，应当视为历史实现命名，而不是论文定义。
+
 ## 5. 对现有代码结构最有用的映射
 
 结合当前仓库，比较自然的职责划分是：
@@ -369,7 +386,7 @@ boundary price `\hat p_k(Y | p_{-k})` 是：
 - `Stage I`：boundary overlay 是否接近真实 switching points
 - `Stage I`：最终价格轨迹是否收敛到小 restricted NE gap
 
-现有仓库里的 `price heatmap`、`boundary overlay`、`vbbr trajectory`、`approximation ratio`、`exploitability` 这些输出目录，基本都能对应到论文里的关键验证点。
+现有仓库里的 `price heatmap`、`boundary overlay`、`pricing trajectory`、`approximation ratio` 等输出目录，基本都能对应到论文里的关键验证点。像 `exploitability` 这一类结果如果保留，更适合作为 supplementary diagnostic，而不是替代论文主指标。
 
 ## 8. 开发时最容易犯错的地方
 
