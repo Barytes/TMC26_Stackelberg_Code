@@ -102,7 +102,7 @@ Use the current paper's baseline grouping.
 
 Do not use old baseline groupings such as `PBRD` or `DRL` in the main paper-aligned narrative unless the paper source is explicitly revised.
 
-The figure-level canonical plan is frozen in `docs/FIGURE_SCRIPT_BLUEPRINT.md`. Workflow 5 should implement the public experiment entry points according to that one-figure-one-script mapping.
+The figure-level canonical plan is frozen in `docs/FIGURE_SCRIPT_BLUEPRINT.md`. The public experiment entry points have been implemented according to that one-figure-one-script mapping.
 
 ---
 

@@ -219,11 +219,9 @@ Strategic-setting baselines:
 - Coop
 - Rand
 
-Current code status is narrower than the paper taxonomy:
+Current code status follows the paper taxonomy:
 
-- `GSO`, `GA`, `BO`, `ME`, `SingleSP`, and `Rand` have direct code paths.
-- `MARL` is not yet a dedicated public baseline; the current code only contains a legacy `DRL` proxy.
-- `Coop` does not yet have a dedicated public wrapper.
+- `GSO`, `GA`, `BO`, `MARL`, `ME`, `SingleSP`, `Coop`, and `Rand` all have direct public code paths.
 
 The repository also contains auxiliary or legacy diagnostics beyond this list. Those should not be treated as the paper's primary baseline taxonomy unless the paper source is updated accordingly. See `docs/BASELINE_SCRIPT_MAPPING.md` for the frozen mapping.
 
@@ -232,12 +230,30 @@ The repository also contains auxiliary or legacy diagnostics beyond this list. T
 Use the following order when reading the repository:
 
 1. `TMC26_Stackelberg.tex`
-2. `docs/SPEC.md`
-3. `docs/TERM_INTERFACE_FREEZE.md`
+2. `docs/TERM_INTERFACE_FREEZE.md`
+3. `docs/SPEC.md`
 4. `docs/DEV.md`
-5. `docs/CHANGE_PLAN.md`
-6. `docs/FIGURE_SCRIPT_BLUEPRINT.md`
-7. `docs/OUTPUT_SCHEMA.md`
-8. `docs/FINAL_CONSISTENCY_AUDIT.md`
+5. `docs/STAGE2_SCM_AUDIT.md`
+6. `docs/STAGE1_PRICING_AUDIT.md`
+7. `docs/BASELINE_SCRIPT_MAPPING.md`
+8. `docs/FIGURE_SCRIPT_BLUEPRINT.md`
+9. `docs/OUTPUT_SCHEMA.md`
+10. `docs/CHANGE_PLAN.md`
+11. `docs/FINAL_CONSISTENCY_AUDIT.md`
+12. `docs/BASELINE_IMPLEMENTATION_AUDIT.md`
+
+Current `docs/` directory guide:
+
+- `docs/TERM_INTERFACE_FREEZE.md`: freezes canonical terminology, public naming, source-of-truth priority, and stable interfaces between `src/` and `scripts/`.
+- `docs/SPEC.md`: paper-aligned experiment specification; defines the experiment blocks, claims, metrics, and what the experimental section is supposed to validate.
+- `docs/DEV.md`: implementation memo for developers; explains the intended Stage I / Stage II code structure and the main quantities used in the algorithms.
+- `docs/STAGE2_SCM_AUDIT.md`: Stage II implementation audit; freezes the canonical SCM call chain, result schema, and sanity checks for the follower-side solver.
+- `docs/STAGE1_PRICING_AUDIT.md`: Stage I implementation audit; freezes the pricing-side call chain, result fields, and diagnostics needed by Block B/C/D/F.
+- `docs/BASELINE_SCRIPT_MAPPING.md`: maps the paper baselines to actual code entry points and maps figure blocks to scripts.
+- `docs/FIGURE_SCRIPT_BLUEPRINT.md`: figure-by-figure blueprint; specifies what each main figure should show and which canonical script is responsible for it.
+- `docs/OUTPUT_SCHEMA.md`: output contract for `run_figure_*.py`; defines required artifacts, CSV fields, summary structure, manifest format, and output-directory rules.
+- `docs/CHANGE_PLAN.md`: repository-wide change plan; records the workflow structure, execution order, deliverables, and current completion status.
+- `docs/FINAL_CONSISTENCY_AUDIT.md`: final repository consistency check across paper-facing docs, figure scripts, output schema, and tolerated legacy internals.
+- `docs/BASELINE_IMPLEMENTATION_AUDIT.md`: baseline-focused audit; records which paper baselines are implemented, which are partial, and what implementation differences remain.
 
 If a script name, config key, or old note conflicts with the paper, follow the paper.

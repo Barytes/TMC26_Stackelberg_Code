@@ -31,14 +31,15 @@
   - `configs/figures/paper_base.toml` 已提供论文对齐的 figure-level 默认配置；
   - A-F 全部 blueprint 图号均已落成 `scripts/run_figure_*.py` canonical 入口；
   - 全部 figure-level 入口均为直接可运行脚本，不再通过 subprocess wrapper 或 placeholder 占位；
+- `Coop` 已补齐为正式 public baseline 入口；
+- 工作流 6 与工作流 7 已完成，输出 schema 和最终一致性审计都已落地；
 - 旧的 `docs/stage2_vi_penalty_implementation_guide.md` 和 `review.md` 已删除。
 
-仍待完成：
+当前剩余的是非阻塞收尾项：
 
 - 代码、脚本、配置项里仍存在旧命名；
-- Stage I / Stage II 求解逻辑是否完全贴合当前论文，仍需逐模块核对；
-- 论文当前实验 block A-F 已经有公开脚本入口，后续重点转为统计质量、参数校准和产物验收；
-- 部分脚本名仍保留旧语义，尚未统一清理或建立稳定映射。
+- 统计质量、参数校准和正式论文产物仍需继续打磨；
+- 部分脚本名仍保留旧语义，但公开映射与文档说明已经建立完成。
 
 ---
 

@@ -13,7 +13,7 @@ from scipy.optimize import minimize, minimize_scalar
 from .config import BaselineConfig, StackelbergConfig, SystemConfig
 from .model import UserBatch, local_cost, theta
 from .stackelberg import (
-    _refine_price_for_fixed_set,
+    _boundary_price_for_provider,
     algorithm_2_heuristic_user_selection,
     algorithm_3_gain_approximation,
     run_stage1_solver,
@@ -28,8 +28,13 @@ class BaselineOutcome:
     social_cost: float
     esp_revenue: float
     nsp_revenue: float
-    epsilon_proxy: float
+    grid_ne_gap: float
+    legacy_gain_proxy: float
     meta: dict[str, float | int | str]
+
+    @property
+    def epsilon_proxy(self) -> float:
+        return self.legacy_gain_proxy
 
 
 @dataclass(frozen=True)
@@ -46,7 +51,20 @@ class Stage1GridEvaluation:
     outcomes: list[list[BaselineOutcome]]
     esp_rev: np.ndarray
     nsp_rev: np.ndarray
-    eps: np.ndarray
+    grid_ne_gap: np.ndarray
+
+    @property
+    def eps(self) -> np.ndarray:
+        return self.grid_ne_gap
+
+
+def _normalize_stage1_objective_name(objective_name: str) -> str:
+    raw = str(objective_name).strip().lower()
+    if raw == "real_revenue_deviation_gap":
+        return "grid_ne_gap"
+    if raw == "epsilon_proxy":
+        return "legacy_gain_proxy"
+    return raw
 
 
 def _build_data(users: UserBatch) -> _Data:
@@ -194,7 +212,8 @@ def _evaluate(
         social_cost=social,
         esp_revenue=rev_e,
         nsp_revenue=rev_n,
-        epsilon_proxy=float(max(gE, gN)),
+        grid_ne_gap=float("nan"),
+        legacy_gain_proxy=float(max(gE, gN)),
         meta=meta or {},
     )
 
@@ -226,7 +245,8 @@ def _build_outcome_from_allocations(
         social_cost=social,
         esp_revenue=rev_e,
         nsp_revenue=rev_n,
-        epsilon_proxy=float(max(gE, gN)),
+        grid_ne_gap=float("nan"),
+        legacy_gain_proxy=float(max(gE, gN)),
         meta=meta or {},
     )
 
@@ -259,7 +279,8 @@ def _build_outcome_from_solver_allocations(
         social_cost=social,
         esp_revenue=rev_e,
         nsp_revenue=rev_n,
-        epsilon_proxy=float(max(gE, gN)),
+        grid_ne_gap=float("nan"),
+        legacy_gain_proxy=float(max(gE, gN)),
         meta=meta or {},
     )
 
@@ -1094,7 +1115,7 @@ def evaluate_stage1_price_grid(
     nsp_max_per_pE = np.max(nsp_rev, axis=0, keepdims=True)
     eps_E = esp_max_per_pN - esp_rev
     eps_N = nsp_max_per_pE - nsp_rev
-    eps = np.maximum(eps_E, eps_N)
+    grid_ne_gap = np.maximum(eps_E, eps_N)
 
     return Stage1GridEvaluation(
         pE_grid=pE_grid,
@@ -1102,7 +1123,7 @@ def evaluate_stage1_price_grid(
         outcomes=outcomes,
         esp_rev=esp_rev,
         nsp_rev=nsp_rev,
-        eps=eps,
+        grid_ne_gap=grid_ne_gap,
     )
 
 
@@ -1112,14 +1133,14 @@ def baseline_stage1_grid_search_oracle(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Grid-search SE proxy using *real-revenue deviation gap* definition.
+    """Grid-search SE proxy using the repository's grid-based NE-gap definition.
 
     Definition aligned with plotting scripts:
-      eps_E(i,j) = max_{i'} R_E(i',j) - R_E(i,j)
-      eps_N(i,j) = max_{j'} R_N(i,j') - R_N(i,j)
-      eps(i,j)   = max(eps_E(i,j), eps_N(i,j))
+      gap_E(i,j) = max_{i'} R_E(i',j) - R_E(i,j)
+      gap_N(i,j) = max_{j'} R_N(i,j') - R_N(i,j)
+      grid_ne_gap(i,j) = max(gap_E(i,j), gap_N(i,j))
 
-    Choose grid point with minimum eps(i,j) only.
+    Choose grid point with minimum grid_ne_gap(i,j) only.
     """
     grid = evaluate_stage1_price_grid(
         users=users,
@@ -1134,7 +1155,7 @@ def baseline_stage1_grid_search_oracle(
         pN_points=base_cfg.gso_grid_points,
         stage2_method=base_cfg.stage2_solver_for_pricing,
     )
-    bj, bi = np.unravel_index(int(np.argmin(grid.eps)), grid.eps.shape)
+    bj, bi = np.unravel_index(int(np.argmin(grid.grid_ne_gap)), grid.grid_ne_gap.shape)
     best = grid.outcomes[bj][bi]
     return BaselineOutcome(
         name="GSO",
@@ -1143,11 +1164,53 @@ def baseline_stage1_grid_search_oracle(
         social_cost=best.social_cost,
         esp_revenue=best.esp_revenue,
         nsp_revenue=best.nsp_revenue,
-        epsilon_proxy=float(grid.eps[bj, bi]),
+        grid_ne_gap=float(grid.grid_ne_gap[bj, bi]),
+        legacy_gain_proxy=float(best.legacy_gain_proxy),
         meta={
             "grid_points": base_cfg.gso_grid_points,
-            "oracle_eps_definition": "real_revenue_deviation_gap",
+            "oracle_gap_definition": "grid_ne_gap",
             "selection_rule": "min_eps_only",
+        },
+    )
+
+
+def baseline_coop(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """Cooperative-pricing baseline: maximize joint revenue on the Stage-I price grid."""
+    grid = evaluate_stage1_price_grid(
+        users=users,
+        system=system,
+        stack_cfg=stack_cfg,
+        base_cfg=base_cfg,
+        pE_min=system.cE,
+        pE_max=base_cfg.max_price_E,
+        pN_min=system.cN,
+        pN_max=base_cfg.max_price_N,
+        pE_points=base_cfg.gso_grid_points,
+        pN_points=base_cfg.gso_grid_points,
+        stage2_method=base_cfg.stage2_solver_for_pricing,
+    )
+    joint_revenue = grid.esp_rev + grid.nsp_rev
+    bj, bi = np.unravel_index(int(np.argmax(joint_revenue)), joint_revenue.shape)
+    best = grid.outcomes[bj][bi]
+    return BaselineOutcome(
+        name="Coop",
+        price=best.price,
+        offloading_set=best.offloading_set,
+        social_cost=best.social_cost,
+        esp_revenue=best.esp_revenue,
+        nsp_revenue=best.nsp_revenue,
+        grid_ne_gap=float(grid.grid_ne_gap[bj, bi]),
+        legacy_gain_proxy=float(best.legacy_gain_proxy),
+        meta={
+            "grid_points": int(base_cfg.gso_grid_points),
+            "selection_rule": "max_joint_revenue_only",
+            "objective": "joint_revenue",
+            "stage2_unique_prices": int(grid.pE_grid.size * grid.pN_grid.size),
         },
     )
 
@@ -1264,7 +1327,8 @@ def baseline_stage1_pbdr_discrete_br_map(
         social_cost=out.social_cost,
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
-        epsilon_proxy=float(grid.eps[end_j, end_i]),
+        grid_ne_gap=float(grid.grid_ne_gap[end_j, end_i]),
+        legacy_gain_proxy=float(out.legacy_gain_proxy),
         meta={
             "mode": mode,
             "trajectory_len": len(traj),
@@ -1618,7 +1682,8 @@ def run_stage1_epec_diagonalization(
             social_cost=out.social_cost,
             esp_revenue=out.esp_revenue,
             nsp_revenue=out.nsp_revenue,
-            epsilon_proxy=out.epsilon_proxy,
+            grid_ne_gap=float(out.grid_ne_gap),
+            legacy_gain_proxy=float(out.legacy_gain_proxy),
             meta={
                 "iters": actual_iters,
                 "converged": str(converged).lower(),
@@ -1674,7 +1739,8 @@ def baseline_stage1_pbdr(
         social_cost=out.social_cost,
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
-        epsilon_proxy=out.epsilon_proxy,
+        grid_ne_gap=float(out.grid_ne_gap),
+        legacy_gain_proxy=float(out.legacy_gain_proxy),
         meta={"iters": actual_iters, "grid_points": base_cfg.pbdr_grid_points},
     )
 
@@ -1716,8 +1782,9 @@ def _objective_score_and_candidate(
     pE_audit_grid: np.ndarray,
     pN_audit_grid: np.ndarray,
 ) -> tuple[float, BaselineOutcome]:
-    if objective_name == "real_revenue_deviation_gap":
-        score = _real_deviation_gap_audit(
+    objective_name = _normalize_stage1_objective_name(objective_name)
+    if objective_name == "grid_ne_gap":
+        score = _grid_ne_gap_audit(
             out,
             users,
             system,
@@ -1727,9 +1794,9 @@ def _objective_score_and_candidate(
             pE_audit_grid,
             pN_audit_grid,
         )
-        return float(score), replace(out, epsilon_proxy=float(score))
-    if objective_name == "epsilon_proxy":
-        return float(out.epsilon_proxy), out
+        return float(score), replace(out, grid_ne_gap=float(score))
+    if objective_name == "legacy_gain_proxy":
+        return float(out.legacy_gain_proxy), out
     if objective_name == "joint_revenue":
         return float(-(out.esp_revenue + out.nsp_revenue)), out
     if objective_name == "social_cost":
@@ -1749,9 +1816,11 @@ def _objective_is_better(
         return True
     if abs(candidate_score - incumbent_score) > 1e-12:
         return False
-    if candidate_out.epsilon_proxy < incumbent_out.epsilon_proxy - 1e-12:
+    cand_gap = float(candidate_out.grid_ne_gap if np.isfinite(candidate_out.grid_ne_gap) else candidate_out.legacy_gain_proxy)
+    inc_gap = float(incumbent_out.grid_ne_gap if np.isfinite(incumbent_out.grid_ne_gap) else incumbent_out.legacy_gain_proxy)
+    if cand_gap < inc_gap - 1e-12:
         return True
-    if abs(candidate_out.epsilon_proxy - incumbent_out.epsilon_proxy) > 1e-12:
+    if abs(cand_gap - inc_gap) > 1e-12:
         return False
 
     cand_rev = candidate_out.esp_revenue + candidate_out.nsp_revenue
@@ -1823,7 +1892,7 @@ def _gp_predict(
     return mu, sigma
 
 
-def _real_deviation_gap_audit(
+def _grid_ne_gap_audit(
     current_out: BaselineOutcome,
     users: UserBatch,
     system: SystemConfig,
@@ -1866,6 +1935,28 @@ def _real_deviation_gap_audit(
     return float(max(eps_E, eps_N))
 
 
+def _real_deviation_gap_audit(
+    current_out: BaselineOutcome,
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+    pE_audit_grid: np.ndarray,
+    pN_audit_grid: np.ndarray,
+) -> float:
+    return _grid_ne_gap_audit(
+        current_out,
+        users,
+        system,
+        stack_cfg,
+        base_cfg,
+        stage2_cache,
+        pE_audit_grid,
+        pN_audit_grid,
+    )
+
+
 def _run_stage1_gp_bo(
     users: UserBatch,
     system: SystemConfig,
@@ -1885,6 +1976,7 @@ def _run_stage1_gp_bo(
     init_points = max(1, int(init_points))
     candidate_pool = max(1, int(base_cfg.bo_candidate_pool))
     n_iters = max(0, int(base_cfg.bo_iters))
+    objective_name = _normalize_stage1_objective_name(objective_name)
     pE_min, pE_max = float(system.cE), float(base_cfg.max_price_E)
     pN_min, pN_max = float(system.cN), float(base_cfg.max_price_N)
     stage2_cache: dict[tuple[float, float], BaselineOutcome] = {}
@@ -1967,7 +2059,8 @@ def _run_stage1_gp_bo(
         social_cost=best.social_cost,
         esp_revenue=best.esp_revenue,
         nsp_revenue=best.nsp_revenue,
-        epsilon_proxy=best.epsilon_proxy,
+        grid_ne_gap=best.grid_ne_gap,
+        legacy_gain_proxy=best.legacy_gain_proxy,
         meta={
             "evals": len(x),
             "objective": objective_name,
@@ -1976,7 +2069,7 @@ def _run_stage1_gp_bo(
             "stage2_unique_prices": len(stage2_cache),
             **(
                 {"audit_grid_points": int(pE_audit_grid.size)}
-                if objective_name == "real_revenue_deviation_gap"
+                if objective_name == "grid_ne_gap"
                 else {}
             ),
         },
@@ -1989,16 +2082,35 @@ def baseline_stage1_bo(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """GP-based Bayesian optimization on epsilon proxy."""
+    """GP-based Bayesian optimization on grid-based NE gap."""
     return _run_stage1_gp_bo(
         users,
         system,
         stack_cfg,
         base_cfg,
         outcome_name="BO",
-        objective_name="epsilon_proxy",
+        objective_name="grid_ne_gap",
         init_points=int(base_cfg.bo_init_points),
         seed_offset=101,
+    )
+
+
+def baseline_stage1_bo_online_grid_ne_gap(
+    users: UserBatch,
+    system: SystemConfig,
+    stack_cfg: StackelbergConfig,
+    base_cfg: BaselineConfig,
+) -> BaselineOutcome:
+    """Online GP-BO variant with |D0|=1 on grid-based NE gap."""
+    return _run_stage1_gp_bo(
+        users,
+        system,
+        stack_cfg,
+        base_cfg,
+        outcome_name="BO-online",
+        objective_name="grid_ne_gap",
+        init_points=1,
+        seed_offset=151,
     )
 
 
@@ -2008,17 +2120,7 @@ def baseline_stage1_bo_online_real_gap(
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Online GP-BO variant with |D0|=1 on real deviation gap."""
-    return _run_stage1_gp_bo(
-        users,
-        system,
-        stack_cfg,
-        base_cfg,
-        outcome_name="BO-online",
-        objective_name="real_revenue_deviation_gap",
-        init_points=1,
-        seed_offset=151,
-    )
+    return baseline_stage1_bo_online_grid_ne_gap(users, system, stack_cfg, base_cfg)
 
 
 def run_stage1_genetic_algorithm(
@@ -2030,7 +2132,7 @@ def run_stage1_genetic_algorithm(
     outcome_name: str = "GA",
     objective_name: str | None = None,
 ) -> tuple[BaselineOutcome, list[tuple[float, float]]]:
-    objective_name = str(objective_name or base_cfg.ga_objective).strip().lower()
+    objective_name = _normalize_stage1_objective_name(objective_name or base_cfg.ga_objective)
     rng = np.random.default_rng(base_cfg.random_seed + 401)
     n_pop = max(2, int(base_cfg.ga_population_size))
     n_gen = max(0, int(base_cfg.ga_generations))
@@ -2174,7 +2276,8 @@ def run_stage1_genetic_algorithm(
             social_cost=best_out.social_cost,
             esp_revenue=best_out.esp_revenue,
             nsp_revenue=best_out.nsp_revenue,
-            epsilon_proxy=best_out.epsilon_proxy,
+            grid_ne_gap=best_out.grid_ne_gap,
+            legacy_gain_proxy=best_out.legacy_gain_proxy,
             meta={
                 "objective": objective_name,
                 "population_size": n_pop,
@@ -2189,7 +2292,7 @@ def run_stage1_genetic_algorithm(
                 "stage2_unique_prices": len(stage2_cache),
                 **(
                     {"audit_grid_points": int(pE_audit_grid.size)}
-                    if objective_name == "real_revenue_deviation_gap"
+                    if objective_name == "grid_ne_gap"
                     else {}
                 ),
             },
@@ -2208,25 +2311,23 @@ def baseline_stage1_ga(
     return outcome
 
 
-def baseline_stage1_drl(
+def baseline_stage1_marl(
     users: UserBatch,
     system: SystemConfig,
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Legacy joint-action tabular RL proxy, not a full paper-facing MARL wrapper."""
-    grid_e = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.drl_price_levels)
-    grid_n = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.drl_price_levels)
-    action_deltas = (-1, 0, 1)
-    q_esp = np.zeros((grid_e.size, grid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
-    q_nsp = np.zeros((grid_e.size, grid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
+    """Paper-aligned MARL baseline using stateless joint-action Q-learning on price pairs."""
+    grid_e = np.linspace(system.cE, base_cfg.max_price_E, base_cfg.marl_price_levels)
+    grid_n = np.linspace(system.cN, base_cfg.max_price_N, base_cfg.marl_price_levels)
+    q_esp = np.zeros((grid_e.size, grid_n.size), dtype=float)
+    q_nsp = np.zeros((grid_e.size, grid_n.size), dtype=float)
     rng = np.random.default_rng(base_cfg.random_seed + 303)
     stage2_cache: dict[tuple[int, int], BaselineOutcome] = {}
+    total_updates = 0
+    pure_nash_greedy_picks = 0
 
-    def clamp(idx: int, n: int) -> int:
-        return min(max(idx, 0), n - 1)
-
-    def state_outcome(e_idx: int, n_idx: int) -> BaselineOutcome:
+    def joint_action_outcome(e_idx: int, n_idx: int) -> BaselineOutcome:
         key = (int(e_idx), int(n_idx))
         if key not in stage2_cache:
             stage2_cache[key] = _stage2_solver(
@@ -2240,62 +2341,52 @@ def baseline_stage1_drl(
             )
         return stage2_cache[key]
 
-    for _ in range(base_cfg.drl_episodes):
-        i = int(rng.integers(0, grid_e.size))
-        j = int(rng.integers(0, grid_n.size))
-        for _step in range(base_cfg.drl_steps_per_episode):
-            if rng.uniform() < base_cfg.drl_epsilon:
-                a_esp = int(rng.integers(0, len(action_deltas)))
-                a_nsp = int(rng.integers(0, len(action_deltas)))
+    for _ in range(base_cfg.marl_episodes):
+        for _step in range(base_cfg.marl_steps_per_episode):
+            greedy_e, greedy_n, has_pure_nash = _joint_action_q_greedy_action(q_esp, q_nsp)
+            pure_nash_greedy_picks += int(has_pure_nash)
+
+            if rng.uniform() < base_cfg.marl_epsilon:
+                a_esp = int(rng.integers(0, grid_e.size))
             else:
-                a_esp, a_nsp, _ = _joint_action_q_greedy_action(q_esp[i, j], q_nsp[i, j])
-            ni = clamp(i + action_deltas[a_esp], grid_e.size)
-            nj = clamp(j + action_deltas[a_nsp], grid_n.size)
-            out = state_outcome(ni, nj)
+                a_esp = int(greedy_e)
+            if rng.uniform() < base_cfg.marl_epsilon:
+                a_nsp = int(rng.integers(0, grid_n.size))
+            else:
+                a_nsp = int(greedy_n)
+
+            out = joint_action_outcome(a_esp, a_nsp)
             reward_esp = float(out.esp_revenue)
             reward_nsp = float(out.nsp_revenue)
-            next_a_esp, next_a_nsp, _ = _joint_action_q_greedy_action(q_esp[ni, nj], q_nsp[ni, nj])
-            td_target_esp = reward_esp + base_cfg.drl_gamma * float(q_esp[ni, nj, next_a_esp, next_a_nsp])
-            td_target_nsp = reward_nsp + base_cfg.drl_gamma * float(q_nsp[ni, nj, next_a_esp, next_a_nsp])
-            q_esp[i, j, a_esp, a_nsp] += base_cfg.drl_alpha * (td_target_esp - q_esp[i, j, a_esp, a_nsp])
-            q_nsp[i, j, a_esp, a_nsp] += base_cfg.drl_alpha * (td_target_nsp - q_nsp[i, j, a_esp, a_nsp])
-            i, j = ni, nj
+            next_a_esp, next_a_nsp, _ = _joint_action_q_greedy_action(q_esp, q_nsp)
+            td_target_esp = reward_esp + base_cfg.marl_gamma * float(q_esp[next_a_esp, next_a_nsp])
+            td_target_nsp = reward_nsp + base_cfg.marl_gamma * float(q_nsp[next_a_esp, next_a_nsp])
+            q_esp[a_esp, a_nsp] += base_cfg.marl_alpha * (td_target_esp - q_esp[a_esp, a_nsp])
+            q_nsp[a_esp, a_nsp] += base_cfg.marl_alpha * (td_target_nsp - q_nsp[a_esp, a_nsp])
+            total_updates += 1
 
-    start_i = int(np.argmin(np.abs(grid_e - max(system.cE, float(stack_cfg.initial_pE)))))
-    start_j = int(np.argmin(np.abs(grid_n - max(system.cN, float(stack_cfg.initial_pN)))))
-    i, j = start_i, start_j
-    rollout_steps = 0
-    pure_nash_steps = 0
-    visited = {(i, j)}
-    rollout_limit = max(1, int(base_cfg.drl_steps_per_episode))
-    for _ in range(rollout_limit):
-        a_esp, a_nsp, has_pure_nash = _joint_action_q_greedy_action(q_esp[i, j], q_nsp[i, j])
-        pure_nash_steps += int(has_pure_nash)
-        ni = clamp(i + action_deltas[a_esp], grid_e.size)
-        nj = clamp(j + action_deltas[a_nsp], grid_n.size)
-        if ni == i and nj == j:
-            break
-        i, j = ni, nj
-        rollout_steps += 1
-        if (i, j) in visited:
-            break
-        visited.add((i, j))
-
-    out = state_outcome(i, j)
+    final_e, final_n, final_has_pure_nash = _joint_action_q_greedy_action(q_esp, q_nsp)
+    out = joint_action_outcome(final_e, final_n)
     return BaselineOutcome(
-        name="DRL",
+        name="MARL",
         price=out.price,
         offloading_set=out.offloading_set,
         social_cost=out.social_cost,
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
-        epsilon_proxy=out.epsilon_proxy,
+        grid_ne_gap=out.grid_ne_gap,
+        legacy_gain_proxy=out.legacy_gain_proxy,
         meta={
-            "episodes": base_cfg.drl_episodes,
+            "episodes": base_cfg.marl_episodes,
+            "steps_per_episode": base_cfg.marl_steps_per_episode,
+            "price_levels": grid_e.size,
             "policy": "joint_action_q",
+            "action_space": "discrete_price_levels",
             "rewards": "esp_revenue,nsp_revenue",
-            "rollout_steps": rollout_steps,
-            "pure_nash_steps": pure_nash_steps,
+            "training_updates": total_updates,
+            "pure_nash_greedy_picks": pure_nash_greedy_picks,
+            "final_policy_selector": "pure_nash_then_joint_value_max",
+            "final_policy_has_pure_nash": int(final_has_pure_nash),
             "stage2_unique_prices": len(stage2_cache),
         },
     )
@@ -2339,7 +2430,8 @@ def baseline_market_equilibrium(
         social_cost=out.social_cost,
         esp_revenue=out.esp_revenue,
         nsp_revenue=out.nsp_revenue,
-        epsilon_proxy=out.epsilon_proxy,
+        grid_ne_gap=out.grid_ne_gap,
+        legacy_gain_proxy=out.legacy_gain_proxy,
         meta={"iters": actual_iters, "converged": converged},
     )
 
@@ -2428,9 +2520,57 @@ def baseline_single_sp(
         social_cost=social_cost,
         esp_revenue=sp_utility_final,  # SP utility (non-zero!)
         nsp_revenue=0.0,  # No separate NSP in SingleSP model
-        epsilon_proxy=0.0,  # Centralized, no deviation incentive
+        grid_ne_gap=0.0,
+        legacy_gain_proxy=0.0,
         meta={"sp_utility": sp_utility_final, "num_offloaders": len(offloading_set)},
     )
+
+
+def _alternating_best_response_for_fixed_set(
+    users: UserBatch,
+    offloading_set: tuple[int, ...],
+    initial_price: tuple[float, float],
+    system: SystemConfig,
+    max_iters: int,
+    tol: float,
+) -> tuple[tuple[float, float] | None, int, bool]:
+    if not offloading_set:
+        return (
+            (float(max(system.cE, initial_price[0])), float(max(system.cN, initial_price[1]))),
+            0,
+            True,
+        )
+
+    data = _build_data(users)
+    pE = float(max(system.cE, initial_price[0]))
+    pN = float(max(system.cN, initial_price[1]))
+
+    brE0 = _boundary_price_for_provider(data, offloading_set, pN, "E", system)
+    brN0 = _boundary_price_for_provider(data, offloading_set, pE, "N", system)
+    if brE0 is None or brN0 is None:
+        return None, 0, False
+
+    actual_iters = 0
+    converged = False
+    for t in range(max(1, int(max_iters))):
+        prev_pE, prev_pN = pE, pN
+
+        brE = _boundary_price_for_provider(data, offloading_set, pN, "E", system)
+        if brE is None:
+            return None, t, False
+        pE = float(max(system.cE, brE))
+
+        brN = _boundary_price_for_provider(data, offloading_set, pE, "N", system)
+        if brN is None:
+            return None, t + 1, False
+        pN = float(max(system.cN, brN))
+
+        actual_iters = t + 1
+        if abs(pE - prev_pE) + abs(pN - prev_pN) <= float(tol):
+            converged = True
+            break
+
+    return (pE, pN), actual_iters, converged
 
 
 def baseline_random_offloading(
@@ -2445,12 +2585,17 @@ def baseline_random_offloading(
     for _ in range(base_cfg.random_offloading_trials):
         mask = rng.uniform(size=users.n) < base_cfg.random_offloading_prob
         off = tuple(np.nonzero(mask)[0].tolist())
-        price = _refine_price_for_fixed_set(
+        solved = _alternating_best_response_for_fixed_set(
             users,
             off,
             (max(system.cE, stack_cfg.initial_pE), max(system.cN, stack_cfg.initial_pN)),
             system,
+            max_iters=int(base_cfg.pbdr_max_iters),
+            tol=float(base_cfg.pbdr_tol),
         )
+        price, actual_iters, converged = solved
+        if price is None:
+            continue
         out = _evaluate(
             users,
             off,
@@ -2459,11 +2604,32 @@ def baseline_random_offloading(
             system,
             stack_cfg,
             "RandomOffloading",
-            meta={"source_set_size": len(off)},
+            meta={
+                "source_set_size": len(off),
+                "br_iters": int(actual_iters),
+                "converged": str(bool(converged)).lower(),
+                "pricing_solver": "fixed_set_alternating_br",
+            },
         )
         if best is None or (out.esp_revenue + out.nsp_revenue) > (best.esp_revenue + best.nsp_revenue):
             best = out
-    assert best is not None
+    if best is None:
+        best = _evaluate(
+            users,
+            tuple(),
+            max(system.cE, stack_cfg.initial_pE),
+            max(system.cN, stack_cfg.initial_pN),
+            system,
+            stack_cfg,
+            "RandomOffloading",
+            meta={
+                "source_set_size": 0,
+                "br_iters": 0,
+                "converged": "true",
+                "pricing_solver": "fixed_set_alternating_br",
+                "fallback": "empty_set",
+            },
+        )
     return best
 
 
@@ -2508,10 +2674,11 @@ def run_all_baselines(
     if users.n <= base_cfg.exact_max_users:
         outcomes.append(baseline_stage1_epec_diagonalization(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_bo(users, system, stack_cfg, base_cfg))
-    outcomes.append(baseline_stage1_bo_online_real_gap(users, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage1_bo_online_grid_ne_gap(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_stage1_ga(users, system, stack_cfg, base_cfg))
-    outcomes.append(baseline_stage1_drl(users, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_stage1_marl(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_market_equilibrium(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_single_sp(users, system, stack_cfg, base_cfg))
+    outcomes.append(baseline_coop(users, system, stack_cfg, base_cfg))
     outcomes.append(baseline_random_offloading(users, system, stack_cfg, base_cfg))
     return outcomes

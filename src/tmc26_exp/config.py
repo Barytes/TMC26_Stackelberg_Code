@@ -109,12 +109,12 @@ class BaselineConfig:
     ga_crossover_rate: float
     ga_mutation_rate: float
     ga_mutation_std: float
-    drl_price_levels: int
-    drl_episodes: int
-    drl_steps_per_episode: int
-    drl_alpha: float
-    drl_gamma: float
-    drl_epsilon: float
+    marl_price_levels: int
+    marl_episodes: int
+    marl_steps_per_episode: int
+    marl_alpha: float
+    marl_gamma: float
+    marl_epsilon: float
     market_max_iters: int
     market_step_size: float
     market_tol: float
@@ -136,6 +136,30 @@ class BaselineConfig:
     gekko_time_limit: int
     gekko_max_iter: int
     gekko_mip_gap: float
+
+    @property
+    def drl_price_levels(self) -> int:
+        return self.marl_price_levels
+
+    @property
+    def drl_episodes(self) -> int:
+        return self.marl_episodes
+
+    @property
+    def drl_steps_per_episode(self) -> int:
+        return self.marl_steps_per_episode
+
+    @property
+    def drl_alpha(self) -> float:
+        return self.marl_alpha
+
+    @property
+    def drl_gamma(self) -> float:
+        return self.marl_gamma
+
+    @property
+    def drl_epsilon(self) -> float:
+        return self.marl_epsilon
 
 
 @dataclass(frozen=True)
@@ -312,7 +336,7 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         bo_candidate_pool=int(raw.get("bo_candidate_pool", 96)),
         bo_kernel_bandwidth=float(raw.get("bo_kernel_bandwidth", 0.25)),
         bo_ucb_beta=float(raw.get("bo_ucb_beta", 2.5)),
-        ga_objective=str(raw.get("ga_objective", "epsilon_proxy")).strip().lower(),
+        ga_objective=str(raw.get("ga_objective", "grid_ne_gap")).strip().lower(),
         ga_population_size=int(raw.get("ga_population_size", 24)),
         ga_generations=int(raw.get("ga_generations", 30)),
         ga_elite_size=int(raw.get("ga_elite_size", 2)),
@@ -320,12 +344,12 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         ga_crossover_rate=float(raw.get("ga_crossover_rate", 0.8)),
         ga_mutation_rate=float(raw.get("ga_mutation_rate", 0.2)),
         ga_mutation_std=float(raw.get("ga_mutation_std", 0.08)),
-        drl_price_levels=int(raw.get("drl_price_levels", 15)),
-        drl_episodes=int(raw.get("drl_episodes", 120)),
-        drl_steps_per_episode=int(raw.get("drl_steps_per_episode", 40)),
-        drl_alpha=float(raw.get("drl_alpha", 0.1)),
-        drl_gamma=float(raw.get("drl_gamma", 0.95)),
-        drl_epsilon=float(raw.get("drl_epsilon", 0.2)),
+        marl_price_levels=int(raw.get("marl_price_levels", raw.get("drl_price_levels", 15))),
+        marl_episodes=int(raw.get("marl_episodes", raw.get("drl_episodes", 120))),
+        marl_steps_per_episode=int(raw.get("marl_steps_per_episode", raw.get("drl_steps_per_episode", 40))),
+        marl_alpha=float(raw.get("marl_alpha", raw.get("drl_alpha", 0.1))),
+        marl_gamma=float(raw.get("marl_gamma", raw.get("drl_gamma", 0.95))),
+        marl_epsilon=float(raw.get("marl_epsilon", raw.get("drl_epsilon", 0.2))),
         market_max_iters=int(raw.get("market_max_iters", 80)),
         market_step_size=float(raw.get("market_step_size", 0.2)),
         market_tol=float(raw.get("market_tol", 1e-4)),
@@ -363,9 +387,10 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         raise ValueError("bo_kernel_bandwidth must be positive.")
     if cfg.bo_ucb_beta < 0:
         raise ValueError("bo_ucb_beta must be non-negative.")
-    if cfg.ga_objective not in {"epsilon_proxy", "real_revenue_deviation_gap", "joint_revenue", "social_cost"}:
+    if cfg.ga_objective not in {"grid_ne_gap", "real_revenue_deviation_gap", "epsilon_proxy", "joint_revenue", "social_cost"}:
         raise ValueError(
-            "ga_objective must be one of epsilon_proxy/real_revenue_deviation_gap/joint_revenue/social_cost."
+            "ga_objective must be one of grid_ne_gap/joint_revenue/social_cost "
+            "(legacy aliases: real_revenue_deviation_gap, epsilon_proxy)."
         )
     if cfg.ga_population_size <= 0:
         raise ValueError("ga_population_size must be positive.")
@@ -379,6 +404,16 @@ def _parse_baselines(raw: dict[str, Any], stack: StackelbergConfig, seed: int) -
         raise ValueError("ga_crossover_rate must be in [0,1].")
     if not (0.0 <= cfg.ga_mutation_rate <= 1.0):
         raise ValueError("ga_mutation_rate must be in [0,1].")
+    if cfg.marl_price_levels < 2:
+        raise ValueError("marl_price_levels must be at least 2.")
+    if cfg.marl_episodes <= 0 or cfg.marl_steps_per_episode <= 0:
+        raise ValueError("marl_episodes and marl_steps_per_episode must be positive.")
+    if not (0.0 < cfg.marl_alpha <= 1.0):
+        raise ValueError("marl_alpha must satisfy 0 < marl_alpha <= 1.")
+    if not (0.0 <= cfg.marl_gamma <= 1.0):
+        raise ValueError("marl_gamma must be in [0,1].")
+    if not (0.0 <= cfg.marl_epsilon <= 1.0):
+        raise ValueError("marl_epsilon must be in [0,1].")
     if cfg.ga_mutation_std <= 0:
         raise ValueError("ga_mutation_std must be positive.")
     if cfg.random_offloading_trials <= 0:

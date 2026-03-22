@@ -66,7 +66,8 @@
 | `vbbr` | 旧版 Stage I solver 命名；现在只能解释为 boundary-price / iterative-pricing 历史实现名 | `仅文档映射，逐步移除` | 不再作为论文主术语 |
 | `pbdr` | 旧版 price-BRD / plotting helper 命名 | `仅内部保留` | 只允许出现在 legacy helper 或旧输出文件名 |
 | `verified epsilon` | 旧版 gap 语言 | `禁止在新文档中使用` | 统一替换为 `NE gap` 或 `restricted NE gap` |
-| `epsilon_proxy` | baseline 中的近似 gap 字段 | `内部保留，后续重命名` | 对外说明时必须写明其是 proxy |
+| `real_revenue_deviation_gap` | `grid_ne_gap` 的 legacy alias | `仅兼容保留` | 新配置、新脚本参数、新输出字段统一写 `grid_ne_gap` |
+| `epsilon_proxy` | `legacy_gain_proxy` 的 legacy alias | `仅兼容保留` | 新文档、输出字段、公开脚本统一写 `legacy_gain_proxy` |
 | `RNE` | 旧版结果对象命名 | `仅内部保留` | 文档中不再使用 |
 | `VBBROracleResult` | 旧版 Stage I oracle 结果对象 | `仅内部保留` | paper-facing oracle 已新增独立对象 |
 | `stage1_solver_variant = vbbr_brd` | 保留的备选 Stage I pipeline 配置值 | `允许保留，但必须标注 backup` | 不能再当成论文主线默认叙事 |
@@ -198,9 +199,7 @@
   - equilibrium baselines
   - strategic-setting baselines
 - 当前代码与论文 baseline taxonomy 的冻结映射是：
-  - direct paper-facing: `GSO / GA / BO / ME / SingleSP / Rand`
-  - legacy proxy only: `DRL -> MARL proxy`
-  - missing dedicated public wrapper: `Coop`
+  - direct paper-facing: `GSO / GA / BO / MARL / ME / SingleSP / Coop / Rand`
   - auxiliary / legacy only: `UBRD / VI / PEN / PBRD / PBRD_DISCRETE / EPEC-DIAG / BO-online / GSSE`
 - 当前文件内部若继续调用旧命名函数，不影响外部术语冻结；
 - 对外说明时必须以 baseline 类型和论文分组为主，而不是内部函数名。

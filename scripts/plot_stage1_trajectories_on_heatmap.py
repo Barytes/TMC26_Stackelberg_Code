@@ -47,6 +47,15 @@ def _load_summary_kv(path: Path) -> dict[str, str]:
     return out
 
 
+def _normalize_surface_name(raw: str) -> str:
+    name = str(raw).strip().lower()
+    if name in {"real_gap", "real_revenue_deviation_gap"}:
+        return "grid_ne_gap"
+    if name == "epsilon_proxy":
+        return "legacy_gain_proxy"
+    return name
+
+
 def _load_grid_csv(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -54,10 +63,22 @@ def _load_grid_csv(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     if not rows:
         raise ValueError(f"CSV has no data rows: {path}")
 
-    required = {"pE", "pN", "esp_revenue", "nsp_revenue", "eps"}
+    header = set(rows[0].keys() if rows else [])
+    required = {"pE", "pN", "esp_revenue", "nsp_revenue"}
     if not required.issubset(set(rows[0].keys() if rows else [])):
         raise ValueError(f"CSV missing required columns: {required}")
-    has_eps_proxy = "epsilon_proxy" in set(rows[0].keys() if rows else [])
+    if "grid_ne_gap" in header:
+        gap_column = "grid_ne_gap"
+    elif "eps" in header:
+        gap_column = "eps"
+    else:
+        raise ValueError("CSV must contain 'grid_ne_gap' (or legacy alias 'eps').")
+    if "legacy_gain_proxy" in header:
+        proxy_column = "legacy_gain_proxy"
+    elif "epsilon_proxy" in header:
+        proxy_column = "epsilon_proxy"
+    else:
+        proxy_column = None
 
     pE_vals = sorted({float(r["pE"]) for r in rows})
     pN_vals = sorted({float(r["pN"]) for r in rows})
@@ -69,23 +90,23 @@ def _load_grid_csv(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.n
     n_map = {v: j for j, v in enumerate(pN_vals)}
     esp_rev = np.full((n_rows, n_cols), np.nan, dtype=float)
     nsp_rev = np.full((n_rows, n_cols), np.nan, dtype=float)
-    eps = np.full((n_rows, n_cols), np.nan, dtype=float)
-    eps_proxy = np.full((n_rows, n_cols), np.nan, dtype=float) if has_eps_proxy else None
+    grid_ne_gap = np.full((n_rows, n_cols), np.nan, dtype=float)
+    legacy_gain_proxy = np.full((n_rows, n_cols), np.nan, dtype=float) if proxy_column is not None else None
 
     for r in rows:
         i = e_map[float(r["pE"])]
         j = n_map[float(r["pN"])]
         esp_rev[j, i] = float(r["esp_revenue"])
         nsp_rev[j, i] = float(r["nsp_revenue"])
-        eps[j, i] = float(r["eps"])
-        if eps_proxy is not None:
-            eps_proxy[j, i] = float(r["epsilon_proxy"])
+        grid_ne_gap[j, i] = float(r[gap_column])
+        if legacy_gain_proxy is not None and proxy_column is not None:
+            legacy_gain_proxy[j, i] = float(r[proxy_column])
 
-    if np.any(~np.isfinite(esp_rev)) or np.any(~np.isfinite(nsp_rev)) or np.any(~np.isfinite(eps)):
+    if np.any(~np.isfinite(esp_rev)) or np.any(~np.isfinite(nsp_rev)) or np.any(~np.isfinite(grid_ne_gap)):
         raise ValueError("CSV grid is incomplete.")
-    if eps_proxy is not None and np.any(~np.isfinite(eps_proxy)):
-        raise ValueError("CSV epsilon_proxy grid is incomplete.")
-    return pE_grid, pN_grid, esp_rev, nsp_rev, eps, eps_proxy
+    if legacy_gain_proxy is not None and np.any(~np.isfinite(legacy_gain_proxy)):
+        raise ValueError("CSV legacy_gain_proxy grid is incomplete.")
+    return pE_grid, pN_grid, esp_rev, nsp_rev, grid_ne_gap, legacy_gain_proxy
 
 
 def _nearest_idx(grid: np.ndarray, value: float) -> int:
@@ -172,10 +193,12 @@ def _parse_baselines(raw: str) -> list[str]:
     out: list[str] = []
     for part in cleaned.split(","):
         name = part.upper()
+        if name == "DRL":
+            name = "MARL"
         if not name:
             continue
-        if name not in {"BO", "BO-ONLINE", "GA", "DRL", "EPEC-DIAG"}:
-            raise ValueError(f"Unsupported baseline: {name}. Allowed: BO, BO-ONLINE, GA, DRL, EPEC-DIAG.")
+        if name not in {"BO", "BO-ONLINE", "GA", "MARL", "EPEC-DIAG"}:
+            raise ValueError(f"Unsupported baseline: {name}. Allowed: BO, BO-ONLINE, GA, MARL, EPEC-DIAG.")
         if name not in out:
             out.append(name)
     return out
@@ -293,105 +316,91 @@ def _simulate_bo_trajectory(
         "trace_mode": trace_mode,
         "evals": len(sampled),
         "unique_points": unique_count,
-        "best_epsilon": float(best_val),
+        "best_score": float(best_val),
     }
     return traj, meta
 
 
-def _simulate_drl_trajectory(
+def _simulate_marl_trajectory(
     pE_grid: np.ndarray,
     pN_grid: np.ndarray,
     esp_revenue: np.ndarray,
     nsp_revenue: np.ndarray,
-    drl_price_levels: int,
-    drl_episodes: int,
-    drl_steps_per_episode: int,
-    drl_alpha: float,
-    drl_gamma: float,
-    drl_epsilon: float,
+    marl_price_levels: int,
+    marl_episodes: int,
+    marl_steps_per_episode: int,
+    marl_alpha: float,
+    marl_gamma: float,
+    marl_epsilon: float,
     seed: int,
-    start_pE: float,
-    start_pN: float,
-    rollout_steps: int,
 ) -> tuple[list[tuple[float, float]], dict[str, float | int | str]]:
-    dgrid_e = np.linspace(float(pE_grid[0]), float(pE_grid[-1]), int(drl_price_levels))
-    dgrid_n = np.linspace(float(pN_grid[0]), float(pN_grid[-1]), int(drl_price_levels))
-    action_deltas = (-1, 0, 1)
-    q_esp = np.zeros((dgrid_e.size, dgrid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
-    q_nsp = np.zeros((dgrid_e.size, dgrid_n.size, len(action_deltas), len(action_deltas)), dtype=float)
+    e_min = float(pE_grid[_nearest_positive_idx(pE_grid, 0.0)])
+    n_min = float(pN_grid[_nearest_positive_idx(pN_grid, 0.0)])
+    dgrid_e = np.linspace(e_min, float(pE_grid[-1]), int(marl_price_levels))
+    dgrid_n = np.linspace(n_min, float(pN_grid[-1]), int(marl_price_levels))
+    q_esp = np.zeros((dgrid_e.size, dgrid_n.size), dtype=float)
+    q_nsp = np.zeros((dgrid_e.size, dgrid_n.size), dtype=float)
     rng = np.random.default_rng(seed)
+    points: list[tuple[float, float]] = []
+    pure_nash_greedy_picks = 0
+    training_updates = 0
 
-    def clamp(idx: int, n: int) -> int:
-        return min(max(idx, 0), n - 1)
-
-    def greedy_joint_action(e_idx: int, n_idx: int) -> tuple[int, int, bool]:
-        q_e = q_esp[e_idx, n_idx]
-        q_n = q_nsp[e_idx, n_idx]
-        best_e = np.max(q_e, axis=0, keepdims=True)
-        best_n = np.max(q_n, axis=1, keepdims=True)
-        pure_nash_mask = (q_e >= best_e - 1e-12) & (q_n >= best_n - 1e-12)
+    def greedy_joint_action() -> tuple[int, int, bool]:
+        best_e = np.max(q_esp, axis=0, keepdims=True)
+        best_n = np.max(q_nsp, axis=1, keepdims=True)
+        pure_nash_mask = (q_esp >= best_e - 1e-12) & (q_nsp >= best_n - 1e-12)
         if np.any(pure_nash_mask):
             candidates = np.argwhere(pure_nash_mask)
-            scores = (q_e + q_n)[pure_nash_mask]
+            scores = (q_esp + q_nsp)[pure_nash_mask]
             pick = candidates[int(np.argmax(scores))]
             return int(pick[0]), int(pick[1]), True
-        flat_idx = int(np.argmax(q_e + q_n))
-        a_e, a_n = np.unravel_index(flat_idx, q_e.shape)
+        flat_idx = int(np.argmax(q_esp + q_nsp))
+        a_e, a_n = np.unravel_index(flat_idx, q_esp.shape)
         return int(a_e), int(a_n), False
 
     def rewards_at(e_idx: int, n_idx: int) -> tuple[float, float]:
         i, j, _, _ = _snap_to_grid(pE_grid, pN_grid, float(dgrid_e[e_idx]), float(dgrid_n[n_idx]))
         return float(esp_revenue[j, i]), float(nsp_revenue[j, i])
 
-    for _ in range(int(drl_episodes)):
-        i = int(rng.integers(0, dgrid_e.size))
-        j = int(rng.integers(0, dgrid_n.size))
-        for _step in range(int(drl_steps_per_episode)):
-            if float(rng.uniform()) < float(drl_epsilon):
-                a_esp = int(rng.integers(0, len(action_deltas)))
-                a_nsp = int(rng.integers(0, len(action_deltas)))
-            else:
-                a_esp, a_nsp, _ = greedy_joint_action(i, j)
-            ni = clamp(i + action_deltas[a_esp], dgrid_e.size)
-            nj = clamp(j + action_deltas[a_nsp], dgrid_n.size)
-            reward_esp, reward_nsp = rewards_at(ni, nj)
-            next_a_esp, next_a_nsp, _ = greedy_joint_action(ni, nj)
-            td_target_esp = reward_esp + float(drl_gamma) * float(q_esp[ni, nj, next_a_esp, next_a_nsp])
-            td_target_nsp = reward_nsp + float(drl_gamma) * float(q_nsp[ni, nj, next_a_esp, next_a_nsp])
-            q_esp[i, j, a_esp, a_nsp] += float(drl_alpha) * (td_target_esp - q_esp[i, j, a_esp, a_nsp])
-            q_nsp[i, j, a_esp, a_nsp] += float(drl_alpha) * (td_target_nsp - q_nsp[i, j, a_esp, a_nsp])
-            i, j = ni, nj
-
-    i = _nearest_idx(dgrid_e, start_pE)
-    j = _nearest_idx(dgrid_n, start_pN)
-    points: list[tuple[float, float]] = []
-    visited_states: set[tuple[int, int]] = set()
-
     def append_point(e_idx: int, n_idx: int) -> None:
         e_snap = float(pE_grid[_nearest_idx(pE_grid, float(dgrid_e[e_idx]))])
         n_snap = float(pN_grid[_nearest_idx(pN_grid, float(dgrid_n[n_idx]))])
-        points.append((e_snap, n_snap))
+        point = (e_snap, n_snap)
+        if not points or point != points[-1]:
+            points.append(point)
 
-    append_point(i, j)
-    visited_states.add((i, j))
-    for _ in range(int(rollout_steps)):
-        a_esp, a_nsp, _ = greedy_joint_action(i, j)
-        ni = clamp(i + action_deltas[a_esp], dgrid_e.size)
-        nj = clamp(j + action_deltas[a_nsp], dgrid_n.size)
-        if ni == i and nj == j:
-            break
-        i, j = ni, nj
-        append_point(i, j)
-        state = (i, j)
-        if state in visited_states:
-            break
-        visited_states.add(state)
+    for _ in range(int(marl_episodes)):
+        for _step in range(int(marl_steps_per_episode)):
+            greedy_e, greedy_n, has_pure_nash = greedy_joint_action()
+            pure_nash_greedy_picks += int(has_pure_nash)
+            if float(rng.uniform()) < float(marl_epsilon):
+                a_esp = int(rng.integers(0, dgrid_e.size))
+            else:
+                a_esp = int(greedy_e)
+            if float(rng.uniform()) < float(marl_epsilon):
+                a_nsp = int(rng.integers(0, dgrid_n.size))
+            else:
+                a_nsp = int(greedy_n)
+            reward_esp, reward_nsp = rewards_at(a_esp, a_nsp)
+            next_a_esp, next_a_nsp, _ = greedy_joint_action()
+            td_target_esp = reward_esp + float(marl_gamma) * float(q_esp[next_a_esp, next_a_nsp])
+            td_target_nsp = reward_nsp + float(marl_gamma) * float(q_nsp[next_a_esp, next_a_nsp])
+            q_esp[a_esp, a_nsp] += float(marl_alpha) * (td_target_esp - q_esp[a_esp, a_nsp])
+            q_nsp[a_esp, a_nsp] += float(marl_alpha) * (td_target_nsp - q_nsp[a_esp, a_nsp])
+            training_updates += 1
+        best_e, best_n, _ = greedy_joint_action()
+        append_point(best_e, best_n)
 
-    end_esp, end_nsp = rewards_at(i, j)
+    best_e, best_n, final_has_pure_nash = greedy_joint_action()
+    append_point(best_e, best_n)
+    end_esp, end_nsp = rewards_at(best_e, best_n)
     meta = {
-        "episodes": int(drl_episodes),
-        "steps_per_episode": int(drl_steps_per_episode),
-        "rollout_points": len(points),
+        "episodes": int(marl_episodes),
+        "steps_per_episode": int(marl_steps_per_episode),
+        "trajectory_points": len(points),
+        "training_updates": training_updates,
+        "pure_nash_greedy_picks": pure_nash_greedy_picks,
+        "final_policy_has_pure_nash": int(final_has_pure_nash),
         "final_esp_revenue": float(end_esp),
         "final_nsp_revenue": float(end_nsp),
         "final_joint_revenue": float(end_esp + end_nsp),
@@ -440,7 +449,7 @@ def _plot_compare(
         "BO-ONLINE": "BO-online",
         "GA": "GA",
         "EPEC-DIAG": "EPEC-diag",
-        "DRL": "MARL proxy (DRL)",
+        "MARL": "MARL",
     }
     styles = {
         "VBBR": {"color": "cyan", "linestyle": "-", "linewidth": 1.8},
@@ -448,9 +457,9 @@ def _plot_compare(
         "BO-ONLINE": {"color": "deepskyblue", "linestyle": ":", "linewidth": 1.7},
         "GA": {"color": "orangered", "linestyle": "-", "linewidth": 1.6},
         "EPEC-DIAG": {"color": "white", "linestyle": "-", "linewidth": 1.6},
-        "DRL": {"color": "lime", "linestyle": "-.", "linewidth": 1.5},
+        "MARL": {"color": "lime", "linestyle": "-.", "linewidth": 1.5},
     }
-    for name in ["VBBR", "BO", "BO-ONLINE", "GA", "EPEC-DIAG", "DRL"]:
+    for name in ["VBBR", "BO", "BO-ONLINE", "GA", "EPEC-DIAG", "MARL"]:
         if name not in trajectories:
             continue
         traj = trajectories[name]
@@ -485,23 +494,23 @@ def _save_trajectory_csv(
     trajectory: list[tuple[float, float]],
     pE_grid: np.ndarray,
     pN_grid: np.ndarray,
-    eps: np.ndarray,
+    grid_ne_gap: np.ndarray,
     surface: np.ndarray,
     surface_label: str,
 ) -> None:
-    rows = [f"step,pE,pN,nearest_grid_pE,nearest_grid_pN,nearest_grid_eps,{surface_label}"]
+    rows = [f"step,pE,pN,nearest_grid_pE,nearest_grid_pN,nearest_grid_gap,{surface_label}"]
     for k, (pE, pN) in enumerate(trajectory):
         i = _nearest_idx(pE_grid, pE)
         j = _nearest_idx(pN_grid, pN)
         rows.append(
-            f"{k},{pE:.10g},{pN:.10g},{float(pE_grid[i]):.10g},{float(pN_grid[j]):.10g},{float(eps[j, i]):.10g},{float(surface[j, i]):.10g}"
+            f"{k},{pE:.10g},{pN:.10g},{float(pE_grid[i]):.10g},{float(pN_grid[j]):.10g},{float(grid_ne_gap[j, i]):.10g},{float(surface[j, i]):.10g}"
         )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Plot BO/BO-online/GA/EPEC-diag/DRL/VBBR trajectory comparison on a known Stage-I heatmap CSV."
+        description="Plot BO/BO-online/GA/EPEC-diag/MARL/VBBR trajectory comparison on a known Stage-I heatmap CSV."
     )
     parser.add_argument("--csv", type=str, required=True, help="Path to price_grid_metrics.csv.")
     parser.add_argument("--config", type=str, default="configs/default.toml", help="Path to TOML config.")
@@ -517,8 +526,8 @@ def main() -> None:
     parser.add_argument(
         "--baselines",
         type=str,
-        default="BO,DRL",
-        help="Comma-separated baseline trajectories to draw. Supported: BO,BO-ONLINE,GA,EPEC-DIAG,DRL. Use 'none' to skip.",
+        default="BO,MARL",
+        help="Comma-separated baseline trajectories to draw. Supported: BO,BO-ONLINE,GA,EPEC-DIAG,MARL. Use 'none' to skip.",
     )
     parser.add_argument(
         "--bo-trace-mode",
@@ -530,34 +539,26 @@ def main() -> None:
     parser.add_argument(
         "--ga-objective",
         type=str,
-        choices=["epsilon_proxy", "real_revenue_deviation_gap", "joint_revenue", "social_cost"],
+        choices=["grid_ne_gap", "joint_revenue", "social_cost", "real_revenue_deviation_gap", "epsilon_proxy"],
         default=None,
         help="Optional override for the GA objective.",
     )
     parser.add_argument(
         "--surface",
         type=str,
-        choices=["real_gap", "epsilon_proxy"],
-        default="real_gap",
+        choices=["grid_ne_gap", "legacy_gain_proxy", "real_gap", "epsilon_proxy"],
+        default="grid_ne_gap",
         help="Heatmap surface to visualize.",
     )
     parser.add_argument(
         "--bo-surface",
         type=str,
-        choices=["real_gap", "epsilon_proxy"],
+        choices=["grid_ne_gap", "legacy_gain_proxy", "real_gap", "epsilon_proxy"],
         default=None,
         help="Optional BO objective surface override. Default: same as --surface.",
     )
     parser.add_argument("--bo-seed", type=int, default=None, help="Optional BO RNG seed override.")
-    parser.add_argument("--drl-seed", type=int, default=None, help="Optional DRL RNG seed override.")
-    parser.add_argument(
-        "--drl-rollout-steps",
-        type=_positive_int,
-        default=200,
-        help="Max greedy rollout steps when visualizing DRL trajectory.",
-    )
-    parser.add_argument("--drl-start-pE", type=float, default=None, help="Optional DRL rollout start pE.")
-    parser.add_argument("--drl-start-pN", type=float, default=None, help="Optional DRL rollout start pN.")
+    parser.add_argument("--marl-seed", "--drl-seed", dest="marl_seed", type=int, default=None, help="Optional MARL RNG seed override.")
     parser.add_argument(
         "--vbbr-csv",
         type=str,
@@ -584,15 +585,22 @@ def main() -> None:
     args = parser.parse_args()
 
     csv_path = Path(args.csv)
-    pE_grid, pN_grid, esp_rev, nsp_rev, eps, eps_proxy = _load_grid_csv(csv_path)
+    pE_grid, pN_grid, esp_rev, nsp_rev, grid_ne_gap, legacy_gain_proxy = _load_grid_csv(csv_path)
     joint_revenue = esp_rev + nsp_rev
-    bo_surface_name = str(args.bo_surface) if args.bo_surface is not None else str(args.surface)
-    if args.surface == "epsilon_proxy" and eps_proxy is None:
-        raise ValueError("Requested epsilon_proxy heatmap surface, but CSV does not contain column 'epsilon_proxy'.")
-    if bo_surface_name == "epsilon_proxy" and eps_proxy is None:
-        raise ValueError("Requested epsilon_proxy BO surface, but CSV does not contain column 'epsilon_proxy'.")
-    heatmap_surface = eps if args.surface == "real_gap" else eps_proxy
-    bo_surface = eps if bo_surface_name == "real_gap" else eps_proxy
+    surface_name = _normalize_surface_name(args.surface)
+    bo_surface_name = _normalize_surface_name(args.bo_surface) if args.bo_surface is not None else surface_name
+    if surface_name == "legacy_gain_proxy" and legacy_gain_proxy is None:
+        raise ValueError(
+            "Requested legacy_gain_proxy heatmap surface, but CSV does not contain "
+            "'legacy_gain_proxy' (or legacy alias 'epsilon_proxy')."
+        )
+    if bo_surface_name == "legacy_gain_proxy" and legacy_gain_proxy is None:
+        raise ValueError(
+            "Requested legacy_gain_proxy BO surface, but CSV does not contain "
+            "'legacy_gain_proxy' (or legacy alias 'epsilon_proxy')."
+        )
+    heatmap_surface = grid_ne_gap if surface_name == "grid_ne_gap" else legacy_gain_proxy
+    bo_surface = grid_ne_gap if bo_surface_name == "grid_ne_gap" else legacy_gain_proxy
     assert heatmap_surface is not None
     assert bo_surface is not None
 
@@ -626,17 +634,17 @@ def main() -> None:
             users = sample_users(cfg, rng)
         return users
 
-    ga_objective_name = str(args.ga_objective).strip() if args.ga_objective is not None else str(cfg.baselines.ga_objective)
+    ga_objective_name = _normalize_surface_name(args.ga_objective) if args.ga_objective is not None else _normalize_surface_name(cfg.baselines.ga_objective)
 
     meta_lines: list[str] = [
         f"csv = {csv_path}",
         f"config = {config_path}",
         f"seed = {seed}",
         f"eps_tol = {eps_tol}",
-        f"heatmap_surface = {args.surface}",
-        f"bo_objective = {'real_revenue_deviation_gap' if bo_surface_name == 'real_gap' else 'epsilon_proxy'}",
+        f"heatmap_surface = {surface_name}",
+        f"bo_objective = {bo_surface_name}",
         f"ga_objective = {ga_objective_name}",
-        "drl_rewards = esp_revenue,nsp_revenue",
+        "marl_rewards = esp_revenue,nsp_revenue",
         f"baselines_selected = {','.join(baselines) if baselines else 'none'}",
     ]
 
@@ -667,7 +675,7 @@ def main() -> None:
 
     bo_seed = int(args.bo_seed) if args.bo_seed is not None else int(cfg.baselines.random_seed + 101)
     bo_online_seed = int(cfg.baselines.random_seed + 151)
-    drl_seed = int(args.drl_seed) if args.drl_seed is not None else int(cfg.baselines.random_seed + 303)
+    marl_seed = int(args.marl_seed) if args.marl_seed is not None else int(cfg.baselines.random_seed + 303)
 
     if "EPEC-DIAG" in baselines:
         epec_out, epec_traj = run_stage1_epec_diagonalization(
@@ -685,7 +693,8 @@ def main() -> None:
                 f"epec_diag_grid_points = {epec_out.meta['grid_points']}",
                 f"epec_diag_trajectory_len = {epec_out.meta['trajectory_len']}",
                 f"epec_diag_stage2_unique_prices = {epec_out.meta['stage2_unique_prices']}",
-                f"epec_diag_final_eps_proxy = {epec_out.epsilon_proxy}",
+                f"epec_diag_final_grid_ne_gap = {epec_out.grid_ne_gap}",
+                f"epec_diag_final_legacy_gain_proxy = {epec_out.legacy_gain_proxy}",
             ]
         )
 
@@ -713,11 +722,7 @@ def main() -> None:
                 f"bo_trace_mode = {args.bo_trace_mode}",
                 f"bo_evals = {bo_meta['evals']}",
                 f"bo_unique_points = {bo_meta['unique_points']}",
-                (
-                    f"bo_best_epsilon = {bo_meta['best_epsilon']}"
-                    if bo_surface_name == "real_gap"
-                    else f"bo_best_epsilon_proxy = {bo_meta['best_epsilon']}"
-                ),
+                f"bo_best_score = {bo_meta['best_score']}",
             ]
         )
 
@@ -745,11 +750,7 @@ def main() -> None:
                 f"bo_online_trace_mode = {args.bo_trace_mode}",
                 f"bo_online_evals = {bo_online_meta['evals']}",
                 f"bo_online_unique_points = {bo_online_meta['unique_points']}",
-                (
-                    f"bo_online_best_epsilon = {bo_online_meta['best_epsilon']}"
-                    if bo_surface_name == 'real_gap'
-                    else f"bo_online_best_epsilon_proxy = {bo_online_meta['best_epsilon']}"
-                ),
+                f"bo_online_best_score = {bo_online_meta['best_score']}",
             ]
         )
 
@@ -771,50 +772,43 @@ def main() -> None:
                 f"ga_evals = {ga_out.meta['evals']}",
                 f"ga_trajectory_len = {ga_out.meta['trajectory_len']}",
                 f"ga_stage2_unique_prices = {ga_out.meta['stage2_unique_prices']}",
-                f"ga_final_eps_proxy = {ga_out.epsilon_proxy}",
+                f"ga_final_grid_ne_gap = {ga_out.grid_ne_gap}",
+                f"ga_final_legacy_gain_proxy = {ga_out.legacy_gain_proxy}",
             ]
         )
 
-    if "DRL" in baselines:
-        start_pE = float(args.drl_start_pE) if args.drl_start_pE is not None else float(cfg.stackelberg.initial_pE)
-        start_pN = float(args.drl_start_pN) if args.drl_start_pN is not None else float(cfg.stackelberg.initial_pN)
-        if start_pE <= float(pE_grid[0]):
-            start_i = _nearest_positive_idx(pE_grid, start_pE)
-            start_pE = float(pE_grid[start_i])
-        if start_pN <= float(pN_grid[0]):
-            start_j = _nearest_positive_idx(pN_grid, start_pN)
-            start_pN = float(pN_grid[start_j])
-        drl_traj, drl_meta = _simulate_drl_trajectory(
+    if "MARL" in baselines:
+        marl_traj, marl_meta = _simulate_marl_trajectory(
             pE_grid=pE_grid,
             pN_grid=pN_grid,
             esp_revenue=esp_rev,
             nsp_revenue=nsp_rev,
-            drl_price_levels=int(cfg.baselines.drl_price_levels),
-            drl_episodes=int(cfg.baselines.drl_episodes),
-            drl_steps_per_episode=int(cfg.baselines.drl_steps_per_episode),
-            drl_alpha=float(cfg.baselines.drl_alpha),
-            drl_gamma=float(cfg.baselines.drl_gamma),
-            drl_epsilon=float(cfg.baselines.drl_epsilon),
-            seed=drl_seed,
-            start_pE=start_pE,
-            start_pN=start_pN,
-            rollout_steps=int(args.drl_rollout_steps),
+            marl_price_levels=int(cfg.baselines.marl_price_levels),
+            marl_episodes=int(cfg.baselines.marl_episodes),
+            marl_steps_per_episode=int(cfg.baselines.marl_steps_per_episode),
+            marl_alpha=float(cfg.baselines.marl_alpha),
+            marl_gamma=float(cfg.baselines.marl_gamma),
+            marl_epsilon=float(cfg.baselines.marl_epsilon),
+            seed=marl_seed,
         )
-        trajectories["DRL"] = drl_traj
+        trajectories["MARL"] = marl_traj
         meta_lines.extend(
             [
-                f"drl_seed = {drl_seed}",
-                f"drl_rollout_start = ({start_pE:.10g},{start_pN:.10g})",
-                f"drl_episodes = {drl_meta['episodes']}",
-                f"drl_steps_per_episode = {drl_meta['steps_per_episode']}",
-                f"drl_rollout_points = {drl_meta['rollout_points']}",
-                f"drl_final_esp_revenue = {drl_meta['final_esp_revenue']}",
-                f"drl_final_nsp_revenue = {drl_meta['final_nsp_revenue']}",
-                f"drl_final_joint_revenue = {drl_meta['final_joint_revenue']}",
+                f"marl_seed = {marl_seed}",
+                f"marl_episodes = {marl_meta['episodes']}",
+                f"marl_steps_per_episode = {marl_meta['steps_per_episode']}",
+                f"marl_trajectory_points = {marl_meta['trajectory_points']}",
+                f"marl_final_esp_revenue = {marl_meta['final_esp_revenue']}",
+                f"marl_final_nsp_revenue = {marl_meta['final_nsp_revenue']}",
+                f"marl_final_joint_revenue = {marl_meta['final_joint_revenue']}",
             ]
         )
 
-    fig_name = "eps_heatmap_trajectory_compare.png" if args.surface == "real_gap" else "eps_proxy_heatmap_trajectory_compare.png"
+    fig_name = (
+        "grid_ne_gap_heatmap_trajectory_compare.png"
+        if surface_name == "grid_ne_gap"
+        else "legacy_gain_proxy_heatmap_trajectory_compare.png"
+    )
     fig_path = out_dir / fig_name
     _plot_compare(
         surface=heatmap_surface,
@@ -823,11 +817,11 @@ def main() -> None:
         trajectories=trajectories,
         eps_tol=eps_tol,
         out_path=fig_path,
-        cbar_label="restricted_gap" if args.surface == "real_gap" else "restricted_gap_proxy",
+        cbar_label="grid_ne_gap" if surface_name == "grid_ne_gap" else "legacy_gain_proxy",
         title=(
-            "Stage-I trajectories on restricted-gap heatmap"
-            if args.surface == "real_gap"
-            else "Stage-I trajectories on restricted-gap proxy heatmap"
+            "Stage-I trajectories on grid-NE-gap heatmap"
+            if surface_name == "grid_ne_gap"
+            else "Stage-I trajectories on legacy-gain-proxy heatmap"
         ),
     )
 
@@ -838,22 +832,22 @@ def main() -> None:
             surface = bo_surface
             surface_label = (
                 (
-                    "nearest_grid_bo_online_real_gap"
-                    if name == "BO-ONLINE" and bo_surface_name == "real_gap"
-                    else "nearest_grid_bo_online_epsilon_proxy"
+                    "nearest_grid_bo_online_grid_ne_gap"
+                    if name == "BO-ONLINE" and bo_surface_name == "grid_ne_gap"
+                    else "nearest_grid_bo_online_legacy_gain_proxy"
                 )
                 if name == "BO-ONLINE"
                 else (
-                    "nearest_grid_bo_real_gap" if bo_surface_name == "real_gap" else "nearest_grid_bo_epsilon_proxy"
+                    "nearest_grid_bo_grid_ne_gap" if bo_surface_name == "grid_ne_gap" else "nearest_grid_bo_legacy_gain_proxy"
                 )
             )
         elif name == "GA":
-            if ga_objective_name == "real_revenue_deviation_gap":
-                surface = eps
-                surface_label = "nearest_grid_ga_real_gap"
-            elif ga_objective_name == "epsilon_proxy" and eps_proxy is not None:
-                surface = eps_proxy
-                surface_label = "nearest_grid_ga_epsilon_proxy"
+            if ga_objective_name == "grid_ne_gap":
+                surface = grid_ne_gap
+                surface_label = "nearest_grid_ga_grid_ne_gap"
+            elif ga_objective_name == "legacy_gain_proxy" and legacy_gain_proxy is not None:
+                surface = legacy_gain_proxy
+                surface_label = "nearest_grid_ga_legacy_gain_proxy"
             else:
                 surface = joint_revenue
                 surface_label = "nearest_grid_ga_joint_revenue"
@@ -866,7 +860,7 @@ def main() -> None:
             traj,
             pE_grid,
             pN_grid,
-            eps,
+            grid_ne_gap,
             surface,
             surface_label,
         )

@@ -40,17 +40,17 @@
 | `GSO` | `baseline_stage1_grid_search_oracle` | 已直接实现 | 正式 paper-facing baseline |
 | `GA` | `baseline_stage1_ga` | 已直接实现 | 正式 paper-facing baseline |
 | `BO` | `baseline_stage1_bo` | 已直接实现 | 正式 paper-facing baseline |
-| `MARL` | `baseline_stage1_drl` | 仅有 legacy RL proxy，不是明确的 MARL public wrapper | 对外必须写成 `MARL (current code proxy: DRL)` |
+| `MARL` | `baseline_stage1_marl` | 已直接实现，采用离散 price-pair joint-action Q-learning | 正式 paper-facing baseline |
 | `ME` | `baseline_market_equilibrium` | 已直接实现，但输出名是 `MarketEquilibrium` | 对外统一写 `ME` |
 | `SingleSP` | `baseline_single_sp` | 已直接实现 | 正式 paper-facing baseline |
-| `Coop` | 无 dedicated public wrapper | 当前缺口 | 文档中必须明确“尚未有单独公共实现” |
+| `Coop` | `baseline_coop` | 已直接实现，采用 joint-revenue price-grid argmax | 正式 paper-facing baseline |
 | `Rand` | `baseline_random_offloading` | 已直接实现，但输出名是 `RandomOffloading` | 对外统一写 `Rand` |
 
 重要结论：
 
-- 当前代码并没有一个真正独立、公开、稳定的 `Coop` 入口；
-- 当前代码里的 `DRL` 不能无说明地直接等同为论文里的 `MARL`；
-- 因此，工作流 4 之后对外叙述必须显式承认这两个实现缺口。
+- 当前论文列出的 8 个 baseline 都已有独立公共入口；
+- `Coop` 的当前实现采用价格网格上的 `joint_revenue` 最大化；
+- `run_all_baselines()` 仍然是 mixed launcher，而不是 paper-baseline-only launcher。
 
 ---
 
@@ -69,7 +69,7 @@
 | `PBRD_DISCRETE` | legacy plotting/comparison helper | 仅 auxiliary/legacy |
 | `EPEC-DIAG` | auxiliary diagnostic | 仅 auxiliary/legacy |
 | `BO-online` | auxiliary ablation / online variant | 仅 supplementary |
-| `DRL` | legacy RL code path | 若继续保留，只能作为 `MARL` 的临时代码 proxy 注记 |
+| `DRL` | compatibility-only legacy alias | 仅用于旧 CLI / 旧配置兼容，不再作为独立 baseline 名称 |
 
 冻结规则：
 
@@ -169,13 +169,10 @@
 
 ---
 
-## 7. 待收敛缺口
+## 7. Remaining Follow-Ups
 
-工作流 4 完成后，仍明确存在以下缺口：
+当前仍建议跟进的事项有：
 
-- 需要 dedicated `Coop` public baseline；
-- 需要一个更名或重写后的 `MARL` public baseline，而不是继续直接暴露 `DRL`；
-- 需要为 Block D/E/F 增加 dedicated public scripts；
 - 需要在后续工作流中决定 `run_all_baselines()` 是否拆分成：
   - formal paper baselines
   - auxiliary diagnostics

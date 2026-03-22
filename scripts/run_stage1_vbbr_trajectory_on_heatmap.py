@@ -70,9 +70,12 @@ def _load_grid_csv(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not rows:
         raise ValueError(f"CSV has no data rows: {path}")
 
-    required = {"pE", "pN", "eps"}
+    required = {"pE", "pN"}
     if not required.issubset(set(rows[0].keys() if rows else [])):
         raise ValueError(f"CSV missing required columns: {required}")
+    gap_col = "grid_ne_gap" if "grid_ne_gap" in rows[0] else "eps" if "eps" in rows[0] else None
+    if gap_col is None:
+        raise ValueError("CSV missing gap column: expected 'grid_ne_gap' or legacy 'eps'.")
 
     pE_vals = sorted({float(r["pE"]) for r in rows})
     pN_vals = sorted({float(r["pN"]) for r in rows})
@@ -85,9 +88,9 @@ def _load_grid_csv(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     for r in rows:
         i = e_map[float(r["pE"])]
         j = n_map[float(r["pN"])]
-        eps[j, i] = float(r["eps"])
+        eps[j, i] = float(r[gap_col])
     if np.any(~np.isfinite(eps)):
-        raise ValueError("CSV epsilon grid is incomplete.")
+        raise ValueError("CSV grid_ne_gap grid is incomplete.")
     return pE_grid, pN_grid, eps
 
 
@@ -104,7 +107,7 @@ def _trajectory_points(result) -> list[tuple[float, float]]:
 
 
 def _plot_eps_with_trajectory(
-    eps: np.ndarray,
+    grid_ne_gap: np.ndarray,
     pE_grid: np.ndarray,
     pN_grid: np.ndarray,
     trajectory: list[tuple[float, float]],
@@ -113,16 +116,16 @@ def _plot_eps_with_trajectory(
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 6), dpi=140)
     im = ax.imshow(
-        eps,
+        grid_ne_gap,
         origin="lower",
         aspect="auto",
         extent=[float(pE_grid[0]), float(pE_grid[-1]), float(pN_grid[0]), float(pN_grid[-1])],
         cmap="magma",
     )
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("restricted_gap")
+    cbar.set_label("grid_ne_gap")
 
-    se_mask = eps <= eps_tol
+    se_mask = grid_ne_gap <= eps_tol
     se_n_idx, se_e_idx = np.nonzero(se_mask)
     if se_n_idx.size > 0:
         ax.scatter(
@@ -133,7 +136,7 @@ def _plot_eps_with_trajectory(
             edgecolors="white",
             linewidths=0.6,
             alpha=0.85,
-            label="SE set (eps<=tol)",
+            label="low-gap set (grid_ne_gap<=tol)",
         )
 
     pE_path = np.asarray([p[0] for p in trajectory], dtype=float)
@@ -152,7 +155,7 @@ def _plot_eps_with_trajectory(
     ax.scatter([pE_path[0]], [pN_path[0]], s=75, c="lime", edgecolors="black", linewidths=0.6, label="start")
     ax.scatter([pE_path[-1]], [pN_path[-1]], s=120, marker="*", c="red", edgecolors="black", linewidths=0.6, label="end")
 
-    ax.set_title("Stage-I pricing trajectory on restricted-gap heatmap")
+    ax.set_title("Stage-I pricing trajectory on grid-NE-gap heatmap")
     ax.set_xlabel("pE")
     ax.set_ylabel("pN")
     ax.legend(loc="upper right", fontsize=8, frameon=True)
@@ -166,14 +169,14 @@ def _save_trajectory_csv(
     trajectory: list[tuple[float, float]],
     pE_grid: np.ndarray,
     pN_grid: np.ndarray,
-    eps: np.ndarray,
+    grid_ne_gap: np.ndarray,
 ) -> None:
-    rows = ["step,pE,pN,nearest_grid_pE,nearest_grid_pN,nearest_grid_eps"]
+    rows = ["step,pE,pN,nearest_grid_pE,nearest_grid_pN,nearest_grid_gap"]
     for step, (pE, pN) in enumerate(trajectory):
         i = _nearest_idx(pE_grid, pE)
         j = _nearest_idx(pN_grid, pN)
         rows.append(
-            f"{step},{pE:.10g},{pN:.10g},{float(pE_grid[i]):.10g},{float(pN_grid[j]):.10g},{float(eps[j, i]):.10g}"
+            f"{step},{pE:.10g},{pN:.10g},{float(pE_grid[i]):.10g},{float(pN_grid[j]):.10g},{float(grid_ne_gap[j, i]):.10g}"
         )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -189,7 +192,7 @@ def main() -> None:
         "--csv",
         type=str,
         default=None,
-        help="Optional existing price_grid_metrics.csv. If set, reuse this restricted-gap grid instead of recomputing.",
+        help="Optional existing price_grid_metrics.csv. If set, reuse this grid-NE-gap grid instead of recomputing.",
     )
     parser.add_argument(
         "--summary",
@@ -218,7 +221,7 @@ def main() -> None:
         "--eps-tol",
         type=_nonnegative_float,
         default=None,
-        help="SE tolerance: eps<=tol. Default uses summary eps_tol if available, else 1e-12.",
+        help="Low-gap tolerance: grid_ne_gap<=tol. Default uses summary eps_tol if available, else 1e-12.",
     )
     parser.add_argument(
         "--out-dir",
@@ -305,7 +308,7 @@ def main() -> None:
             ratio = 100.0 * done / max(total, 1)
             elapsed = time.perf_counter() - started_at
             print(
-                f"\rEvaluating eps-heatmap grid: {done}/{total} ({ratio:.1f}%) elapsed={elapsed:.1f}s pE={pE:.4g} pN={pN:.4g}",
+                f"\rEvaluating grid-ne-gap heatmap: {done}/{total} ({ratio:.1f}%) elapsed={elapsed:.1f}s pE={pE:.4g} pN={pN:.4g}",
                 end="",
                 flush=True,
             )
@@ -328,11 +331,11 @@ def main() -> None:
         )
         pE_grid = grid.pE_grid
         pN_grid = grid.pN_grid
-        eps = grid.eps
+        grid_ne_gap = grid.grid_ne_gap
         heatmap_source = "computed"
     else:
         csv_path = Path(args.csv)
-        pE_grid, pN_grid, eps = _load_grid_csv(csv_path)
+        pE_grid, pN_grid, grid_ne_gap = _load_grid_csv(csv_path)
         heatmap_source = str(csv_path)
 
     stack_cfg = replace(cfg.stackelberg, stage1_solver_variant="vbbr_brd")
@@ -368,18 +371,18 @@ def main() -> None:
     result = solve_stage1_pricing(users, cfg.system, stack_cfg)
     trajectory = _trajectory_points(result)
 
-    fig_path = out_dir / "eps_heatmap_vbbr_trajectory.png"
+    fig_path = out_dir / "grid_ne_gap_heatmap_vbbr_trajectory.png"
     _plot_eps_with_trajectory(
-        eps=eps,
+        grid_ne_gap=grid_ne_gap,
         pE_grid=pE_grid,
         pN_grid=pN_grid,
         trajectory=trajectory,
         eps_tol=eps_tol,
         out_path=fig_path,
     )
-    _save_trajectory_csv(out_dir / "vbbr_trajectory.csv", trajectory, pE_grid, pN_grid, eps)
+    _save_trajectory_csv(out_dir / "vbbr_trajectory.csv", trajectory, pE_grid, pN_grid, grid_ne_gap)
 
-    min_j, min_i = np.unravel_index(int(np.argmin(eps)), eps.shape)
+    min_j, min_i = np.unravel_index(int(np.argmin(grid_ne_gap)), grid_ne_gap.shape)
     end_pE, end_pN = trajectory[-1]
     end_i = _nearest_idx(pE_grid, end_pE)
     end_j = _nearest_idx(pN_grid, end_pN)
@@ -412,8 +415,8 @@ def main() -> None:
         f"start_pN = {trajectory[0][1]:.10g}",
         f"final_pE = {end_pE:.10g}",
         f"final_pN = {end_pN:.10g}",
-        f"final_eps_on_nearest_grid = {float(eps[end_j, end_i]):.10g}",
-        f"global_min_eps = {float(eps[min_j, min_i]):.10g}",
+        f"final_grid_ne_gap_on_nearest_grid = {float(grid_ne_gap[end_j, end_i]):.10g}",
+        f"global_min_grid_ne_gap = {float(grid_ne_gap[min_j, min_i]):.10g}",
         f"global_argmin_pE = {float(pE_grid[min_i]):.10g}",
         f"global_argmin_pN = {float(pN_grid[min_j]):.10g}",
         f"stackelberg_restricted_gap = {float(result.restricted_gap):.10g}",

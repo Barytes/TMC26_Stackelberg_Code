@@ -150,13 +150,13 @@ def _grid_eval_bundle(
         stage2_method=None,
     )
     joint_rev = grid.esp_rev + grid.nsp_rev
-    eps_proxy = np.asarray([[float(out.epsilon_proxy) for out in row] for row in grid.outcomes], dtype=float)
-    eq_mask = grid.eps <= 1e-12
-    representative = s1_heatmaps._select_equilibrium_representative(eq_mask, grid.eps, joint_rev, joint_rev)
-    return cfg_n, users, grid, joint_rev, eps_proxy, eq_mask, representative
+    legacy_gain_proxy = np.asarray([[float(out.legacy_gain_proxy) for out in row] for row in grid.outcomes], dtype=float)
+    eq_mask = grid.grid_ne_gap <= 1e-12
+    representative = s1_heatmaps._select_equilibrium_representative(eq_mask, grid.grid_ne_gap, joint_rev, joint_rev)
+    return cfg_n, users, grid, joint_rev, legacy_gain_proxy, eq_mask, representative
 
 
-def _grid_alias_rows(grid, eps_proxy: np.ndarray) -> list[dict[str, object]]:
+def _grid_alias_rows(grid, legacy_gain_proxy: np.ndarray) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for j, pN in enumerate(grid.pN_grid):
         for i, pE in enumerate(grid.pE_grid):
@@ -167,8 +167,8 @@ def _grid_alias_rows(grid, eps_proxy: np.ndarray) -> list[dict[str, object]]:
                     "esp_revenue": float(grid.esp_rev[j, i]),
                     "nsp_revenue": float(grid.nsp_rev[j, i]),
                     "joint_revenue": float(grid.esp_rev[j, i] + grid.nsp_rev[j, i]),
-                    "restricted_gap": float(grid.eps[j, i]),
-                    "restricted_gap_proxy": float(eps_proxy[j, i]),
+                    "grid_ne_gap": float(grid.grid_ne_gap[j, i]),
+                    "legacy_gain_proxy": float(legacy_gain_proxy[j, i]),
                 }
             )
     return rows
@@ -330,7 +330,12 @@ def _boundary_alias_rows(bundle: dict[str, object], provider: str | None = None)
     return rows
 
 
-def _trajectory_alias_rows(traj: list[tuple[float, float]], pE_grid: np.ndarray, pN_grid: np.ndarray, eps: np.ndarray) -> list[dict[str, object]]:
+def _trajectory_alias_rows(
+    traj: list[tuple[float, float]],
+    pE_grid: np.ndarray,
+    pN_grid: np.ndarray,
+    grid_ne_gap: np.ndarray,
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for step, (pE, pN) in enumerate(traj):
         i = s1_traj._nearest_idx(pE_grid, float(pE))
@@ -342,7 +347,7 @@ def _trajectory_alias_rows(traj: list[tuple[float, float]], pE_grid: np.ndarray,
                 "pN": float(pN),
                 "nearest_grid_pE": float(pE_grid[i]),
                 "nearest_grid_pN": float(pN_grid[j]),
-                "nearest_grid_restricted_gap": float(eps[j, i]),
+                "nearest_grid_grid_ne_gap": float(grid_ne_gap[j, i]),
             }
         )
     return rows
@@ -597,7 +602,7 @@ def main_B1() -> None:
     args = parser.parse_args()
 
     out_dir = resolve_out_dir("run_figure_B1_stage1_joint_revenue_heatmap", args.out_dir)
-    cfg, _users, grid, joint_rev, eps_proxy, eq_mask, representative = _grid_eval_bundle(
+    cfg, _users, grid, joint_rev, legacy_gain_proxy, eq_mask, representative = _grid_eval_bundle(
         cfg=_load_cfg(args.config),
         n_users=int(args.n_users),
         seed=int(args.seed),
@@ -617,10 +622,10 @@ def main_B1() -> None:
         eq_mask=eq_mask,
         representative=representative,
     )
-    alias_rows = _grid_alias_rows(grid, eps_proxy)
+    alias_rows = _grid_alias_rows(grid, legacy_gain_proxy)
     write_csv_rows(
         out_dir / "B1_stage1_joint_revenue_heatmap.csv",
-        ["pE", "pN", "esp_revenue", "nsp_revenue", "joint_revenue", "restricted_gap", "restricted_gap_proxy"],
+        ["pE", "pN", "esp_revenue", "nsp_revenue", "joint_revenue", "grid_ne_gap", "legacy_gain_proxy"],
         alias_rows,
     )
     _write_summary(
@@ -650,7 +655,7 @@ def main_B2() -> None:
     args = parser.parse_args()
 
     out_dir = resolve_out_dir("run_figure_B2_stage1_restricted_gap_heatmap", args.out_dir)
-    _cfg, _users, grid, _joint_rev, eps_proxy, eq_mask, representative = _grid_eval_bundle(
+    _cfg, _users, grid, _joint_rev, legacy_gain_proxy, eq_mask, representative = _grid_eval_bundle(
         cfg=_load_cfg(args.config),
         n_users=int(args.n_users),
         seed=int(args.seed),
@@ -660,11 +665,11 @@ def main_B2() -> None:
         pN_points=int(args.pN_points),
     )
     s1_heatmaps._plot_heatmap(
-        values=grid.eps,
+        values=grid.grid_ne_gap,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
-        title="Restricted-Gap Heatmap",
-        cbar_label="restricted_gap",
+        title="Grid-NE-Gap Heatmap",
+        cbar_label="grid_ne_gap",
         out_path=out_dir / "B2_stage1_restricted_gap_heatmap.png",
         cmap="magma",
         eq_mask=eq_mask,
@@ -674,15 +679,15 @@ def main_B2() -> None:
         {
             "pE": row["pE"],
             "pN": row["pN"],
-            "restricted_gap": row["restricted_gap"],
-            "restricted_gap_proxy": row["restricted_gap_proxy"],
+            "grid_ne_gap": row["grid_ne_gap"],
+            "legacy_gain_proxy": row["legacy_gain_proxy"],
             "joint_revenue": row["joint_revenue"],
         }
-        for row in _grid_alias_rows(grid, eps_proxy)
+        for row in _grid_alias_rows(grid, legacy_gain_proxy)
     ]
     write_csv_rows(
         out_dir / "B2_stage1_restricted_gap_heatmap.csv",
-        ["pE", "pN", "restricted_gap", "restricted_gap_proxy", "joint_revenue"],
+        ["pE", "pN", "grid_ne_gap", "legacy_gain_proxy", "joint_revenue"],
         rows,
     )
     _write_summary(
@@ -889,7 +894,7 @@ def main_C3() -> None:
     result = solve_stage1_pricing(users, cfg.system, stack_cfg)
     trajectory = s1_traj._trajectory_points(result)
     s1_traj._plot_eps_with_trajectory(
-        eps=grid.eps,
+        eps=grid.grid_ne_gap,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
         trajectory=trajectory,
@@ -898,8 +903,8 @@ def main_C3() -> None:
     )
     write_csv_rows(
         out_dir / "C3_price_trajectory_on_gap_heatmap.csv",
-        ["step", "pE", "pN", "nearest_grid_pE", "nearest_grid_pN", "nearest_grid_restricted_gap"],
-        _trajectory_alias_rows(trajectory, grid.pE_grid, grid.pN_grid, grid.eps),
+        ["step", "pE", "pN", "nearest_grid_pE", "nearest_grid_pN", "nearest_grid_grid_ne_gap"],
+        _trajectory_alias_rows(trajectory, grid.pE_grid, grid.pN_grid, grid.grid_ne_gap),
     )
     _write_summary(
         out_dir / "C3_price_trajectory_on_gap_heatmap_summary.txt",
@@ -924,7 +929,7 @@ def main_C5() -> None:
     parser.add_argument("--pNmax", type=float, default=6.0)
     parser.add_argument("--pE-points", type=int, default=81)
     parser.add_argument("--pN-points", type=int, default=81)
-    parser.add_argument("--baselines", type=str, default="BO,GA,DRL")
+    parser.add_argument("--baselines", type=str, default="BO,GA,MARL")
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
 
@@ -944,7 +949,7 @@ def main_C5() -> None:
         pN_points=int(args.pN_points),
         stage2_method=None,
     )
-    eps_proxy = np.asarray([[float(out.epsilon_proxy) for out in row] for row in grid.outcomes], dtype=float)
+    legacy_gain_proxy = np.asarray([[float(out.legacy_gain_proxy) for out in row] for row in grid.outcomes], dtype=float)
     trajectories: dict[str, list[tuple[float, float]]] = {}
     meta_lines = [
         f"config = {args.config}",
@@ -967,12 +972,12 @@ def main_C5() -> None:
 
     baselines = s1_compare._parse_baselines(args.baselines)
     bo_seed = int(cfg.baselines.random_seed + 101)
-    drl_seed = int(cfg.baselines.random_seed + 303)
+    marl_seed = int(cfg.baselines.random_seed + 303)
     if "BO" in baselines:
         bo_traj, bo_meta = s1_compare._simulate_bo_trajectory(
             pE_grid=grid.pE_grid,
             pN_grid=grid.pN_grid,
-            surface=grid.eps,
+            surface=grid.grid_ne_gap,
             bo_init_points=int(cfg.baselines.bo_init_points),
             bo_iters=int(cfg.baselines.bo_iters),
             bo_candidate_pool=int(cfg.baselines.bo_candidate_pool),
@@ -985,57 +990,48 @@ def main_C5() -> None:
         )
         trajectories["BO"] = bo_traj
         meta_lines.append(f"bo_points = {len(bo_traj)}")
-        meta_lines.append(f"bo_best_epsilon = {float(bo_meta['best_epsilon']):.10g}")
+        meta_lines.append(f"bo_best_grid_ne_gap = {float(bo_meta['best_score']):.10g}")
     if "GA" in baselines:
         ga_out, ga_traj = s1_compare.run_stage1_genetic_algorithm(users, cfg.system, cfg.stackelberg, cfg.baselines, outcome_name="GA")
         trajectories["GA"] = ga_traj
         meta_lines.append(f"ga_points = {len(ga_traj)}")
-        meta_lines.append(f"ga_final_gap_proxy = {float(ga_out.epsilon_proxy):.10g}")
-    if "DRL" in baselines:
-        start_pE = float(cfg.stackelberg.initial_pE)
-        start_pN = float(cfg.stackelberg.initial_pN)
-        if start_pE <= float(grid.pE_grid[0]):
-            start_pE = float(grid.pE_grid[s1_compare._nearest_positive_idx(grid.pE_grid, start_pE)])
-        if start_pN <= float(grid.pN_grid[0]):
-            start_pN = float(grid.pN_grid[s1_compare._nearest_positive_idx(grid.pN_grid, start_pN)])
-        drl_traj, drl_meta = s1_compare._simulate_drl_trajectory(
+        meta_lines.append(f"ga_final_grid_ne_gap = {float(ga_out.grid_ne_gap):.10g}")
+    if "MARL" in baselines:
+        marl_traj, marl_meta = s1_compare._simulate_marl_trajectory(
             pE_grid=grid.pE_grid,
             pN_grid=grid.pN_grid,
             esp_revenue=grid.esp_rev,
             nsp_revenue=grid.nsp_rev,
-            drl_price_levels=int(cfg.baselines.drl_price_levels),
-            drl_episodes=int(cfg.baselines.drl_episodes),
-            drl_steps_per_episode=int(cfg.baselines.drl_steps_per_episode),
-            drl_alpha=float(cfg.baselines.drl_alpha),
-            drl_gamma=float(cfg.baselines.drl_gamma),
-            drl_epsilon=float(cfg.baselines.drl_epsilon),
-            seed=drl_seed,
-            start_pE=start_pE,
-            start_pN=start_pN,
-            rollout_steps=200,
+            marl_price_levels=int(cfg.baselines.marl_price_levels),
+            marl_episodes=int(cfg.baselines.marl_episodes),
+            marl_steps_per_episode=int(cfg.baselines.marl_steps_per_episode),
+            marl_alpha=float(cfg.baselines.marl_alpha),
+            marl_gamma=float(cfg.baselines.marl_gamma),
+            marl_epsilon=float(cfg.baselines.marl_epsilon),
+            seed=marl_seed,
         )
-        trajectories["DRL"] = drl_traj
-        meta_lines.append(f"drl_points = {len(drl_traj)}")
-        meta_lines.append(f"drl_final_joint_revenue = {float(drl_meta['final_joint_revenue']):.10g}")
+        trajectories["MARL"] = marl_traj
+        meta_lines.append(f"marl_points = {len(marl_traj)}")
+        meta_lines.append(f"marl_final_joint_revenue = {float(marl_meta['final_joint_revenue']):.10g}")
 
     s1_compare._plot_compare(
-        surface=grid.eps,
+        surface=grid.grid_ne_gap,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
         trajectories=trajectories,
         eps_tol=1e-12,
         out_path=out_dir / "C5_trajectory_compare_supp.png",
-        cbar_label="restricted_gap",
-        title="Stage-I trajectories on restricted-gap heatmap",
+        cbar_label="grid_ne_gap",
+        title="Stage-I trajectories on grid-NE-gap heatmap",
     )
-    method_map = {"VBBR": "proposed", "BO": "BO", "GA": "GA", "DRL": "MARL_proxy_DRL"}
+    method_map = {"VBBR": "proposed", "BO": "BO", "GA": "GA", "MARL": "MARL"}
     rows: list[dict[str, object]] = []
     for name, traj in trajectories.items():
-        for row in _trajectory_alias_rows(traj, grid.pE_grid, grid.pN_grid, grid.eps):
+        for row in _trajectory_alias_rows(traj, grid.pE_grid, grid.pN_grid, grid.grid_ne_gap):
             rows.append({"method": method_map[name], **row})
     write_csv_rows(
         out_dir / "C5_trajectory_compare_supp.csv",
-        ["method", "step", "pE", "pN", "nearest_grid_pE", "nearest_grid_pN", "nearest_grid_restricted_gap"],
+        ["method", "step", "pE", "pN", "nearest_grid_pE", "nearest_grid_pN", "nearest_grid_grid_ne_gap"],
         rows,
     )
     _write_summary(out_dir / "C5_trajectory_compare_supp_summary.txt", meta_lines)

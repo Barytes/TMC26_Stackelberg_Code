@@ -94,8 +94,7 @@ These items still exist, but they are now explicitly treated as internal or comp
 - code/config names such as `vbbr_*`, `pbdr_*`, `stage1_solver_variant = vbbr_brd`;
 - internal result objects such as `VBBROracleResult`;
 - legacy helper scripts such as `run_stage1_vbbr_trajectory_on_heatmap.py` and `plot_pbdr_trajectory_from_heatmap_csv.py`;
-- `DRL` as the current code proxy for paper-facing `MARL`;
-- missing dedicated public `Coop` baseline implementation.
+- some public baselines still rely on coarse grid search and remain resolution-sensitive.
 
 These residuals are acceptable for the current state because they no longer define the public interface or the paper-facing documentation.
 

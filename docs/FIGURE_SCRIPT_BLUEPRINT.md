@@ -27,7 +27,7 @@ From this document onward, the canonical rule is:
 
 - each main figure corresponds to exactly one canonical script;
 - if a current script already produces the right figure, reuse its plot form;
-- if a current script produces multiple figures, workflow 5 should split it into figure-specific direct runners rather than keep one multi-purpose public entry.
+- if a current script previously produced multiple figures, workflow 5 has already split it into figure-specific direct runners rather than keeping one multi-purpose public entry.
 
 Canonical naming convention:
 
@@ -75,7 +75,7 @@ Paper-aligned base scenario:
 
 Implementation note:
 
-- if current code defaults differ from the paper defaults, workflow 5 should create figure-specific config files under `configs/figures/` and use those configs in the canonical scripts.
+- when current code defaults differed from the paper defaults, workflow 5 created figure-specific config files under `configs/figures/`, and the canonical scripts now use those configs.
 
 ### 2.4 Repeat Policy
 
@@ -555,7 +555,7 @@ Each canonical figure script should write:
 - Y axis:
   final restricted gap
 - Methods:
-  proposed Stage I solver, `GSO`, `GA`, `BO`, `MARL (current code proxy: DRL)`
+  proposed Stage I solver, `GSO`, `GA`, `BO`, `MARL`
 - Repeats:
   `20` trials per point
 - Base parameters:
@@ -582,7 +582,7 @@ Each canonical figure script should write:
 - Color:
   restricted gap
 - Methods:
-  proposed Stage I solver, `GA`, `BO`, `MARL (current code proxy: DRL)`
+  proposed Stage I solver, `GA`, `BO`, `MARL`
 - Repeats:
   `1` representative instance
 - Base parameters:
@@ -632,7 +632,7 @@ Each canonical figure script should write:
 - Y axis:
   runtime in seconds
 - Methods:
-  proposed Stage I solver, `GA`, `BO`, `MARL (current code proxy: DRL)`
+  proposed Stage I solver, `GA`, `BO`, `MARL`
 - Baseline / reference:
   `GSO` only where feasible
 - Repeats:
@@ -713,8 +713,6 @@ Each canonical figure script should write:
   `20` trials per `n`
 - Base parameters:
   `n in {20, 40, 60, 80, 100}`, seeds `2026..2045`
-- Implementation note:
-  this figure is blocked until `Coop` has a dedicated public baseline
 - Primary output:
   `E1_user_social_cost_compare.png`
 
@@ -738,8 +736,6 @@ Each canonical figure script should write:
   `20` trials per `n`
 - Base parameters:
   `n in {20, 40, 60, 80, 100}`, seeds `2026..2045`
-- Implementation note:
-  this figure is blocked until `Coop` has a dedicated public baseline
 - Primary output:
   `E2_provider_revenue_compare.png`
 
@@ -762,8 +758,6 @@ Each canonical figure script should write:
   `20` trials per `n`
 - Base parameters:
   `n in {20, 40, 60, 80, 100}`, seeds `2026..2045`
-- Implementation note:
-  this figure is blocked until `Coop` has a dedicated public baseline
 - Primary output:
   `E3_resource_utilization_compare.png`
 
@@ -787,8 +781,6 @@ Each canonical figure script should write:
   `20` trials per `n`
 - Base parameters:
   `n in {20, 40, 60, 80, 100}`, seeds `2026..2045`
-- Implementation note:
-  this figure is blocked until `Coop` has a dedicated public baseline
 - Primary output:
   `E4_price_and_offloading_compare.png`
 
@@ -901,19 +893,15 @@ Each canonical figure script should write:
 
 ## 10. Workflow-5 Implementation Notes
 
-Workflow 5 should implement this document in the following order:
+Workflow 5 was implemented according to the following order:
 
 1. direct figure runners for all A-F figures;
 2. shared helper logic reused from legacy multi-output scripts where appropriate;
 3. figure-specific configs under `configs/figures/`;
 4. figure-level CSV schemas and summary templates.
 
-Two current gaps must be respected during workflow 5:
+Current status after workflow 5 completion:
 
-- `Coop` does not yet have a dedicated public baseline;
-- `MARL` is currently only represented by a legacy `DRL` proxy.
-
-Therefore:
-
-- Block E figures should be implemented with explicit TODO markers if `Coop` is still missing;
-- any `MARL` line in block C comparisons must be labeled as `MARL (current code proxy: DRL)` until the code is upgraded.
+- all figure IDs already have public `run_figure_*.py` entries;
+- Block E figures can use the public baseline set `ME / SingleSP / Coop / Rand`;
+- Block C/D comparison figures can use `MARL` directly as a paper-facing baseline label.

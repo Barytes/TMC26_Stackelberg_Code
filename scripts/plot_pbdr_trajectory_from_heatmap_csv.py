@@ -220,7 +220,7 @@ def main() -> None:
 
     out_dir = resolve_out_dir(f"pbdr_traj_{args.mode}", args.out_dir)
 
-    fig_path = out_dir / "eps_heatmap_pbdr_trajectory.png"
+    fig_path = out_dir / "grid_ne_gap_heatmap_pbdr_trajectory.png"
     _plot_eps_with_trajectory(
         eps=eps,
         pE_grid=pE_grid,

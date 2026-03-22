@@ -37,13 +37,14 @@ import run_boundary_hypothesis_check as boundary_diag
 from tmc26_exp.baselines import (
     BaselineOutcome,
     _solve_centralized_minlp,
+    baseline_coop,
     baseline_market_equilibrium,
     baseline_random_offloading,
     baseline_single_sp,
     baseline_stage1_bo,
-    baseline_stage1_drl,
     baseline_stage1_ga,
     baseline_stage1_grid_search_oracle,
+    baseline_stage1_marl,
     evaluate_stage1_price_grid,
 )
 from tmc26_exp.config import DistributionSpec, ExperimentConfig, load_config
@@ -209,36 +210,6 @@ def _compute_restricted_gap(users, system, stack_cfg, price: tuple[float, float]
     return float(max(gain_E.gain, gain_N.gain))
 
 
-def _cooperative_baseline(users, system, stack_cfg, base_cfg, grid_points: int | None = None) -> BaselineOutcome:
-    n_grid = int(grid_points or base_cfg.gso_grid_points)
-    grid = evaluate_stage1_price_grid(
-        users=users,
-        system=system,
-        stack_cfg=stack_cfg,
-        base_cfg=base_cfg,
-        pE_min=float(system.cE),
-        pE_max=float(base_cfg.max_price_E),
-        pN_min=float(system.cN),
-        pN_max=float(base_cfg.max_price_N),
-        pE_points=n_grid,
-        pN_points=n_grid,
-        stage2_method=base_cfg.stage2_solver_for_pricing,
-    )
-    joint = grid.esp_rev + grid.nsp_rev
-    j, i = np.unravel_index(int(np.argmax(joint)), joint.shape)
-    out = grid.outcomes[j][i]
-    return BaselineOutcome(
-        name="Coop",
-        price=(float(grid.pE_grid[i]), float(grid.pN_grid[j])),
-        offloading_set=out.offloading_set,
-        social_cost=float(out.social_cost),
-        esp_revenue=float(out.esp_revenue),
-        nsp_revenue=float(out.nsp_revenue),
-        epsilon_proxy=float(out.epsilon_proxy),
-        meta={"grid_points": int(n_grid)},
-    )
-
-
 def _run_stage1_method(users, system, stack_cfg, base_cfg, method: str) -> tuple[tuple[float, float], tuple[int, ...], float, float, float, dict[str, object]]:
     method_key = method.lower()
     t0 = time.perf_counter()
@@ -264,8 +235,8 @@ def _run_stage1_method(users, system, stack_cfg, base_cfg, method: str) -> tuple
         out = baseline_stage1_ga(users, system, stack_cfg, base_cfg)
     elif method_key == "bo":
         out = baseline_stage1_bo(users, system, stack_cfg, base_cfg)
-    elif method_key == "drl":
-        out = baseline_stage1_drl(users, system, stack_cfg, base_cfg)
+    elif method_key == "marl":
+        out = baseline_stage1_marl(users, system, stack_cfg, base_cfg)
     elif method_key == "me":
         out = baseline_market_equilibrium(users, system, stack_cfg, base_cfg)
     elif method_key == "singlesp":
@@ -273,7 +244,7 @@ def _run_stage1_method(users, system, stack_cfg, base_cfg, method: str) -> tuple
     elif method_key == "rand":
         out = baseline_random_offloading(users, system, stack_cfg, base_cfg)
     elif method_key == "coop":
-        out = _cooperative_baseline(users, system, stack_cfg, base_cfg)
+        out = baseline_coop(users, system, stack_cfg, base_cfg)
     else:
         raise ValueError(f"Unsupported method={method}")
     runtime = time.perf_counter() - t0
@@ -306,10 +277,10 @@ def _budgeted_cfg(stack_cfg, base_cfg, method: str, budget: int):
         pop = max(pop, 2)
         gens = max(0, budget // pop - 1)
         return stack_cfg, replace(base_cfg, ga_population_size=pop, ga_generations=gens)
-    if method_key == "drl":
+    if method_key == "marl":
         steps = min(20, max(5, budget // 4))
         episodes = max(1, budget // steps)
-        return stack_cfg, replace(base_cfg, drl_episodes=episodes, drl_steps_per_episode=steps)
+        return stack_cfg, replace(base_cfg, marl_episodes=episodes, marl_steps_per_episode=steps)
     if method_key == "gso":
         grid_points = max(2, int(round(math.sqrt(budget))))
         return stack_cfg, replace(base_cfg, gso_grid_points=grid_points)
@@ -592,7 +563,7 @@ def main_C4() -> None:
     n_list = [int(x) for x in args.n_users_list.split(",") if x.strip()]
     budget_list = [int(x) for x in args.budget_list.split(",") if x.strip()]
     rows: list[dict[str, object]] = []
-    methods = ["Proposed", "GSO", "GA", "BO", "MARL proxy (DRL)"]
+    methods = ["Proposed", "GSO", "GA", "BO", "MARL"]
     for n in n_list:
         for budget in budget_list:
             for trial in range(1, args.trials + 1):
@@ -600,10 +571,10 @@ def main_C4() -> None:
                 for method in methods:
                     if method == "GSO" and n > 16:
                         continue
-                    stack_cfg, base_cfg = _budgeted_cfg(cfg.stackelberg, cfg.baselines, method if method != "MARL proxy (DRL)" else "drl", budget)
+                    stack_cfg, base_cfg = _budgeted_cfg(cfg.stackelberg, cfg.baselines, method if method != "MARL" else "marl", budget)
                     internal_method = method
-                    if method == "MARL proxy (DRL)":
-                        internal_method = "DRL"
+                    if method == "MARL":
+                        internal_method = "MARL"
                     price, offloading_set, gap, _, _, meta = _run_stage1_method(users, cfg.system, stack_cfg, base_cfg, internal_method)
                     rows.append(
                         {
@@ -703,14 +674,14 @@ def main_D2() -> None:
     out_dir = resolve_out_dir("run_figure_D2_stage1_runtime_vs_users", args.out_dir)
     cfg = _load_cfg(args.config)
     rows: list[dict[str, object]] = []
-    methods = ["Proposed", "GA", "BO", "MARL proxy (DRL)", "GSO"]
+    methods = ["Proposed", "GA", "BO", "MARL", "GSO"]
     for n in [int(x) for x in args.n_users_list.split(",") if x.strip()]:
         for trial in range(1, args.trials + 1):
             users = _sample_users(cfg, n, args.seed, trial)
             for method in methods:
                 if method == "GSO" and n > 16:
                     continue
-                internal_method = method if method != "MARL proxy (DRL)" else "DRL"
+                internal_method = method if method != "MARL" else "MARL"
                 price, offloading_set, gap, _, _, meta = _run_stage1_method(users, cfg.system, cfg.stackelberg, cfg.baselines, internal_method)
                 rows.append({"method": method, "n_users": n, "trial": trial, "runtime_sec": float(meta["runtime_sec"]), "restricted_gap": float(gap), "offloading_size": int(len(offloading_set)), "final_pE": float(price[0]), "final_pN": float(price[1])})
     write_csv_rows(out_dir / "D2_stage1_runtime_vs_users.csv", ["method", "n_users", "trial", "runtime_sec", "restricted_gap", "offloading_size", "final_pE", "final_pN"], rows)

@@ -181,7 +181,7 @@ Stage I 的关键结构映射保持如下：
 
 ## 8. 当前遗留项
 
-工作流 3 完成后仍有两项遗留：
+工作流 3 之后留下的两项问题，现在状态如下：
 
-- 许多脚本文件名和图标题仍带有 `vbbr`、`epsilon heatmap` 等 legacy 命名，这会在工作流 4-6 继续清理；
-- heatmap / slice / overlay 脚本里的 surface 字段仍混有 `epsilon_proxy` 和旧 baseline 语言，尚未完全切到论文主口径。
+- 许多脚本文件名仍带有 `vbbr`、`epsilon heatmap` 等 legacy 命名，但公开 figure 入口、图标题和输出字段已经统一到当前口径；
+- heatmap / slice / overlay 脚本已统一到 `grid_ne_gap` / `legacy_gain_proxy` 口径，但仍保留少量 legacy alias 兼容分支，不应再作为公开命名使用。

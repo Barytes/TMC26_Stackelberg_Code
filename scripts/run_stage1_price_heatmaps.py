@@ -131,14 +131,14 @@ def _write_grid_csv(
     pN_grid: np.ndarray,
     esp_rev: np.ndarray,
     nsp_rev: np.ndarray,
-    eps: np.ndarray,
-    eps_proxy: np.ndarray,
+    grid_ne_gap: np.ndarray,
+    legacy_gain_proxy: np.ndarray,
 ) -> None:
-    rows = ["pE,pN,esp_revenue,nsp_revenue,joint_revenue,eps,epsilon_proxy"]
+    rows = ["pE,pN,esp_revenue,nsp_revenue,joint_revenue,grid_ne_gap,legacy_gain_proxy"]
     for j, pN in enumerate(pN_grid):
         for i, pE in enumerate(pE_grid):
             rows.append(
-                f"{float(pE):.10g},{float(pN):.10g},{float(esp_rev[j, i]):.10g},{float(nsp_rev[j, i]):.10g},{float(esp_rev[j, i] + nsp_rev[j, i]):.10g},{float(eps[j, i]):.10g},{float(eps_proxy[j, i]):.10g}"
+                f"{float(pE):.10g},{float(pN):.10g},{float(esp_rev[j, i]):.10g},{float(nsp_rev[j, i]):.10g},{float(esp_rev[j, i] + nsp_rev[j, i]):.10g},{float(grid_ne_gap[j, i]):.10g},{float(legacy_gain_proxy[j, i]):.10g}"
             )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -233,12 +233,12 @@ def main() -> None:
         [[float(out.social_cost) for out in row] for row in grid.outcomes],
         dtype=float,
     )
-    eps_proxy = np.array(
-        [[float(out.epsilon_proxy) for out in row] for row in grid.outcomes],
+    legacy_gain_proxy = np.array(
+        [[float(out.legacy_gain_proxy) for out in row] for row in grid.outcomes],
         dtype=float,
     )
-    eq_mask = grid.eps <= float(args.eps_tol)
-    rep = _select_equilibrium_representative(eq_mask, grid.eps, joint_rev, social_cost)
+    eq_mask = grid.grid_ne_gap <= float(args.eps_tol)
+    rep = _select_equilibrium_representative(eq_mask, grid.grid_ne_gap, joint_rev, social_cost)
 
     _plot_heatmap(
         values=grid.esp_rev,
@@ -274,23 +274,23 @@ def main() -> None:
         representative=rep,
     )
     _plot_heatmap(
-        values=grid.eps,
+        values=grid.grid_ne_gap,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
-        title="Restricted-Gap Heatmap",
-        cbar_label="restricted_gap",
-        out_path=out_dir / "eps_heatmap.png",
+        title="Grid-NE-Gap Heatmap",
+        cbar_label="grid_ne_gap",
+        out_path=out_dir / "grid_ne_gap_heatmap.png",
         cmap="magma",
         eq_mask=eq_mask,
         representative=rep,
     )
     _plot_heatmap(
-        values=eps_proxy,
+        values=legacy_gain_proxy,
         pE_grid=grid.pE_grid,
         pN_grid=grid.pN_grid,
-        title="Restricted-Gap Proxy Heatmap",
-        cbar_label="restricted_gap_proxy",
-        out_path=out_dir / "eps_proxy_heatmap.png",
+        title="Legacy Gain Proxy Heatmap",
+        cbar_label="legacy_gain_proxy",
+        out_path=out_dir / "legacy_gain_proxy_heatmap.png",
         cmap="inferno",
         eq_mask=eq_mask,
         representative=rep,
@@ -301,11 +301,11 @@ def main() -> None:
         pN_grid=grid.pN_grid,
         esp_rev=grid.esp_rev,
         nsp_rev=grid.nsp_rev,
-        eps=grid.eps,
-        eps_proxy=eps_proxy,
+        grid_ne_gap=grid.grid_ne_gap,
+        legacy_gain_proxy=legacy_gain_proxy,
     )
 
-    min_j, min_i = np.unravel_index(int(np.argmin(grid.eps)), grid.eps.shape)
+    min_j, min_i = np.unravel_index(int(np.argmin(grid.grid_ne_gap)), grid.grid_ne_gap.shape)
     summary_lines = [
         f"config = {args.config}",
         f"seed = {seed}",
@@ -314,13 +314,13 @@ def main() -> None:
         f"pN_range = [0.0, {float(args.pNmax)}], points = {int(args.pN_points)}",
         f"eps_tol = {float(args.eps_tol):.10g}",
         f"equilibrium_count = {int(np.count_nonzero(eq_mask))}",
-        f"min_eps = {float(grid.eps[min_j, min_i]):.10g}",
+        f"min_grid_ne_gap = {float(grid.grid_ne_gap[min_j, min_i]):.10g}",
         f"argmin_pE = {float(grid.pE_grid[min_i]):.10g}",
         f"argmin_pN = {float(grid.pN_grid[min_j]):.10g}",
         f"representative_pE = {float(grid.pE_grid[rep[1]]):.10g}",
         f"representative_pN = {float(grid.pN_grid[rep[0]]):.10g}",
-        f"representative_eps = {float(grid.eps[rep[0], rep[1]]):.10g}",
-        f"representative_eps_proxy = {float(eps_proxy[rep[0], rep[1]]):.10g}",
+        f"representative_grid_ne_gap = {float(grid.grid_ne_gap[rep[0], rep[1]]):.10g}",
+        f"representative_legacy_gain_proxy = {float(legacy_gain_proxy[rep[0], rep[1]]):.10g}",
         f"representative_joint_revenue = {float(joint_rev[rep[0], rep[1]]):.10g}",
     ]
     (out_dir / "summary.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8")

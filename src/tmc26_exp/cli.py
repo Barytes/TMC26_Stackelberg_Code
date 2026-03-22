@@ -126,12 +126,12 @@ def save_stackelberg_allocation_csv(result, out_path: Path) -> None:
 
 
 def save_baselines_csv(results, out_path: Path) -> None:
-    rows = ["method,pE,pN,offloading_size,social_cost,esp_revenue,nsp_revenue,epsilon_proxy,meta_json"]
+    rows = ["method,pE,pN,offloading_size,social_cost,esp_revenue,nsp_revenue,grid_ne_gap,legacy_gain_proxy,meta_json"]
     for r in results:
         meta_json = str(r.meta).replace(",", ";")
         rows.append(
             f"{r.name},{r.price[0]:.10g},{r.price[1]:.10g},{len(r.offloading_set)},"
-            f"{r.social_cost:.10g},{r.esp_revenue:.10g},{r.nsp_revenue:.10g},{r.epsilon_proxy:.10g},{meta_json}"
+            f"{r.social_cost:.10g},{r.esp_revenue:.10g},{r.nsp_revenue:.10g},{r.grid_ne_gap:.10g},{r.legacy_gain_proxy:.10g},{meta_json}"
         )
     out_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
