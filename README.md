@@ -197,6 +197,8 @@ Important Stage I config keys:
   the `Q` in the paper's local candidate family `N_Q(p)`.
 - `paper_restricted_gap_tol`:
   stopping tolerance for the paper-facing restricted-gap iterative pricing loop.
+- `paper_outer_update_mode`:
+  outer-loop update policy for `paper_iterative_pricing`; supports `esp_first`, `nsp_first`, `gain_max`, and `gain_min`.
 
 Current config files may still default to `vbbr_brd` for continuity with existing experiments.
 For paper-aligned Stage I runs, set `stage1_solver_variant = "paper_iterative_pricing"` explicitly.

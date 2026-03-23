@@ -1,0 +1,149 @@
+run_name = "default_run"
+output_dir = "outputs"
+n_users = 100
+n_trials = 10
+seed = 2026
+
+[system]
+F = 100.0
+B = 40.0
+cE = 0.01
+cN = 0.01
+
+[stackelberg]
+enabled = true
+initial_pE = 0.5
+initial_pN = 0.5
+inner_eta_F0 = 0.5
+inner_eta_B0 = 0.5
+inner_eta_mu0 = 0.5
+inner_max_iters = 500
+inner_tol = 1.0e-4
+greedy_max_iters = 256
+rne_directions = 20
+rne_root_tol = 1.0e-5
+rne_max_expand_steps = 50
+search_max_iters = 20
+search_improvement_tol = 1.0e-9
+stage1_solver_variant = "paper_iterative_pricing"
+paper_local_Q = 16
+paper_restricted_gap_tol = 1.0e-7
+paper_outer_update_mode = "nsp_first"
+vbbr_local_R = 2
+vbbr_local_S = 2
+vbbr_local_budget = 3
+vbbr_top_m = 6
+vbbr_oracle_max_rounds = 1
+vbbr_oracle_improve_tol = 1.0e-8
+vbbr_no_improve_patience = 1
+vbbr_outer_gain_tol = 1.0e-7
+vbbr_damping_alpha = 1.0
+vbbr_outer_update_mode = "esp_first"
+vbbr_cycle_window = 8
+vbbr_disable_exact_inner = false
+
+[baselines]
+enabled = false
+random_seed = 2043
+exact_max_users = 16
+stage2_solver_for_pricing = "DG"
+max_price_E = 6.0
+max_price_N = 6.0
+gso_grid_points = 25
+pbdr_grid_points = 31
+pbdr_max_iters = 30
+pbdr_tol = 1.0e-4
+bo_init_points = 12
+bo_iters = 40
+bo_candidate_pool = 96
+bo_kernel_bandwidth = 0.25
+bo_ucb_beta = 2.5
+marl_price_levels = 15
+marl_episodes = 120
+marl_steps_per_episode = 40
+marl_alpha = 0.1
+marl_gamma = 0.95
+marl_epsilon = 0.2
+market_max_iters = 80
+market_step_size = 0.2
+single_sp_max_iters = 200
+random_offloading_trials = 64
+random_offloading_prob = 0.5
+ubrd_max_iters = 200
+vi_max_iters = 200
+vi_step_size = 0.5
+vi_tol = 1e-5
+penalty_outer_iters = 8
+penalty_inner_iters = 50
+penalty_init_rho = 0.1
+penalty_rho_scale = 4.0
+penalty_tol = 1e-4
+
+[detailed_experiment]
+emit_plan = true
+output_subdir = "detailed_plan"
+suggested_trials = 100
+heavy_trials = 200
+
+metrics = [
+  "potential_offload_ratio",
+  "mean_cost_gap_local_minus_offload",
+  "esp_potential_revenue",
+  "nsp_potential_revenue",
+  "mean_unconstrained_offload_cost",
+]
+
+[price_grid.pE]
+min = 0.05
+max = 5.0
+points = 60
+
+[price_grid.pN]
+min = 0.05
+max = 5.0
+points = 60
+
+[user_distributions.w]
+kind = "uniform"
+low = 0.5
+high = 2.5
+
+[user_distributions.d]
+kind = "uniform"
+low = 1.0
+high = 10.0
+
+[user_distributions.fl]
+kind = "uniform"
+low = 0.5
+high = 1.2
+
+[user_distributions.alpha]
+kind = "uniform"
+low = 10.0
+high = 15.0
+
+[user_distributions.beta]
+kind = "uniform"
+low = 0.1
+high = 0.5
+
+[user_distributions.rho]
+kind = "uniform"
+low = 0.5
+high = 2.0
+
+[user_distributions.varpi]
+kind = "uniform"
+low = 0.8
+high = 1.2
+
+[user_distributions.kappa]
+kind = "uniform"
+low = 0.01
+high = 0.05
+
+[user_distributions.sigma]
+kind = "uniform"
+low = 0.5
+high = 3.0

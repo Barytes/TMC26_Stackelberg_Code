@@ -1248,6 +1248,8 @@ def algorithm_paper_iterative_pricing_stage1(
     cfg: StackelbergConfig,
 ) -> StackelbergResult:
     """Paper-aligned Stage I pipeline: boundary-price BR estimation + iterative pricing."""
+    update_mode = cfg.paper_outer_update_mode
+    next_update_esp = (update_mode == "esp_first")
     pE = max(cfg.initial_pE, system.cE)
     pN = max(cfg.initial_pN, system.cN)
     stopping_reason = "max_iters"
@@ -1332,7 +1334,15 @@ def algorithm_paper_iterative_pricing_stage1(
             final_br_N = br_N
             break
 
-        if t % 2 == 0:
+        if update_mode == "gain_max":
+            update_esp = br_E.gain >= br_N.gain
+        elif update_mode == "gain_min":
+            update_esp = br_E.gain <= br_N.gain
+        else:
+            update_esp = next_update_esp
+            next_update_esp = not next_update_esp
+
+        if update_esp:
             pE = max(system.cE, float(br_E.best_price))
         else:
             pN = max(system.cN, float(br_N.best_price))

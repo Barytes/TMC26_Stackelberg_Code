@@ -67,6 +67,7 @@ class StackelbergConfig:
     stage1_solver_variant: Literal["paper_iterative_pricing", "topk_brd", "vbbr_brd"]
     paper_local_Q: int
     paper_restricted_gap_tol: float
+    paper_outer_update_mode: Literal["gain_max", "gain_min", "esp_first", "nsp_first"]
     topk_brd_price_tol: float
     topk_brd_epsilon_tol: float
     topk_brd_cycle_window: int
@@ -250,6 +251,7 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         stage1_solver_variant=stage1_solver_variant,
         paper_local_Q=int(raw.get("paper_local_Q", 2)),
         paper_restricted_gap_tol=float(raw.get("paper_restricted_gap_tol", raw.get("vbbr_outer_gain_tol", 1e-7))),
+        paper_outer_update_mode=str(raw.get("paper_outer_update_mode", "esp_first")).strip().lower(),
         topk_brd_price_tol=float(raw.get("topk_brd_price_tol", 1e-6)),
         topk_brd_epsilon_tol=float(raw.get("topk_brd_epsilon_tol", 1e-7)),
         topk_brd_cycle_window=int(raw.get("topk_brd_cycle_window", 6)),
@@ -292,6 +294,8 @@ def _parse_stackelberg(raw: dict[str, Any]) -> StackelbergConfig:
         raise ValueError("paper_local_Q must be non-negative.")
     if cfg.paper_restricted_gap_tol <= 0:
         raise ValueError("paper_restricted_gap_tol must be positive.")
+    if cfg.paper_outer_update_mode not in {"gain_max", "gain_min", "esp_first", "nsp_first"}:
+        raise ValueError("paper_outer_update_mode must be 'gain_max', 'gain_min', 'esp_first', or 'nsp_first'.")
     if cfg.topk_brd_price_tol <= 0 or cfg.topk_brd_epsilon_tol <= 0:
         raise ValueError("topk_brd tolerances must be positive.")
     if cfg.topk_brd_cycle_window < 2:
