@@ -1,0 +1,14 @@
+config = configs/default.toml
+seed = 2026
+stage2_method = DG
+pE_range = [0.0, 15.0], points = 150
+pN_range = [0.0, 15.0], points = 150
+eps_tol = 1e-12
+equilibrium_count = 12
+min_eps = 0
+argmin_pE = 3.825503356
+argmin_pN = 2.214765101
+representative_pE = 3.825503356
+representative_pN = 2.214765101
+representative_eps = 0
+representative_joint_revenue = 221.8018871

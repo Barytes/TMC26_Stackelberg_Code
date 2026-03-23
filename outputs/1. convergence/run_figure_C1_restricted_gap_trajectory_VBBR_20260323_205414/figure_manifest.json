@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-23T20:54:42",
+  "figure_id": "C1",
+  "block": "C",
+  "base_stem": "C1_restricted_gap_trajectory",
+  "script": "run_figure_C1_restricted_gap_trajectory.py",
+  "output_dir": "C:\\Users\\a1831\\Desktop\\TMC26_Stackelberg_Code\\outputs\\run_figure_C1_restricted_gap_trajectory_20260323_205414",
+  "summary_file": "C1_restricted_gap_trajectory_summary.txt",
+  "primary_image": "C1_restricted_gap_trajectory.png",
+  "primary_csv": "C1_restricted_gap_trajectory.csv",
+  "config": "configs\\default.toml",
+  "seed": "2026",
+  "n_users": "100",
+  "n_trials": "10",
+  "runtime_sec": "",
+  "primary_metrics": {
+    "center_statistic": "median",
+    "band_statistic": "q25_q75",
+    "stopping_tolerance": "1e-07",
+    "grid_ne_gap_source": "heatmap_csv_nearest",
+    "grid_ne_gap_heatmap_csv": "outputs\\stage1\\run_stage1_price_heatmaps_20260309_113102\\price_grid_metrics.csv",
+    "grid_ne_gap_definition": "precomputed grid_ne_gap surface value at the nearest heatmap grid point to each trajectory price"
+  },
+  "detail_lines": []
+}

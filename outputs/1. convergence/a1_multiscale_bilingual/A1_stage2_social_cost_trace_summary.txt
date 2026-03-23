@@ -1,0 +1,43 @@
+[run]
+figure_id = A1
+block = A
+script = run_figure_A1_stage2_social_cost_trace.py
+output_dir = C:\Users\a1831\Desktop\TMC26_Stackelberg_Code\outputs\a1_multiscale_bilingual
+
+[artifacts]
+primary_image = A1_stage2_social_cost_trace.png
+primary_csv = A1_stage2_social_cost_trace.csv
+summary_file = A1_stage2_social_cost_trace_summary.txt
+
+[inputs]
+config = configs/default.toml
+seed = 2026
+n_users = 50,100,150,200
+n_trials = 
+
+[primary_metrics]
+pE = 0.5
+pN = 0.5
+algorithm2_inner_solver = primal_dual
+centralized_mode = pyomo_scip
+algorithm2_iterations = 33
+algorithm2_final_social_cost = 4468.488244
+algorithm2_runtime_sec = 0.02278069966
+algorithm2_rollbacks = 22
+algorithm2_accepted_admissions = 32
+algorithm2_inner_calls = 56
+algorithm2_final_offloading_size = 10
+algorithm2_used_exact_inner = 0
+centralized_social_cost = 4189.905195
+centralized_solver = pyomo_scip
+lang = bilingual
+max_iter_plot = 12
+
+[runtime]
+runtime_sec = 0.02278069966
+
+[details]
+--- n=50 ---
+--- n=100 ---
+--- n=150 ---
+--- n=200 ---

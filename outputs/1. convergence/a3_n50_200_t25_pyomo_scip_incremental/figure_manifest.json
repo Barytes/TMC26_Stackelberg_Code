@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-23T17:25:20",
+  "figure_id": "A3",
+  "block": "A",
+  "base_stem": "A3_stage2_approx_ratio_bound",
+  "script": "run_figure_A3_stage2_approx_ratio_bound.py",
+  "output_dir": "C:\\Users\\a1831\\Desktop\\TMC26_Stackelberg_Code\\outputs\\a3_n50_200_t25_pyomo_scip_incremental",
+  "summary_file": "A3_stage2_approx_ratio_bound_summary.txt",
+  "primary_image": "A3_stage2_approx_ratio_bound.png",
+  "primary_csv": "A3_stage2_approx_ratio_bound.csv",
+  "config": "configs/default.toml",
+  "seed": "2026",
+  "n_users": "50,100,150,200",
+  "n_trials": "25",
+  "runtime_sec": "",
+  "primary_metrics": {
+    "pE": "0.5",
+    "pN": "0.5",
+    "inner_solver": "primal_dual",
+    "centralized_solver": "pyomo_scip",
+    "plot_transform": "linear",
+    "total_instances": "100",
+    "valid_instances": "99",
+    "plot_valid_instances": "99",
+    "plot_dropped_for_log": "0",
+    "violations": "0",
+    "progress_completed_trials": "100",
+    "progress_total_trials": "100",
+    "progress_status": "completed"
+  },
+  "detail_lines": []
+}

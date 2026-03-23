@@ -1,0 +1,42 @@
+[run]
+figure_id = C5
+block = C
+script = run_figure_C5_trajectory_compare_supp.py
+output_dir = C:\Users\a1831\Desktop\TMC26_Stackelberg_Code\outputs\2. comp stackelberg baseline\run_figure_C5_trajectory_compare_paper_iterative_pricing_q32_20260323
+
+[artifacts]
+primary_image = C5_trajectory_compare_supp.png
+primary_csv = C5_trajectory_compare_supp.csv
+summary_file = C5_trajectory_compare_supp_summary.txt
+
+[inputs]
+config = configs\_tmp_c5_paper_iterative_pricing_q32.toml
+seed = 2026
+n_users = 100
+n_trials = 
+
+[primary_metrics]
+baselines = BO,GA,MARL
+proposed_solver_variant = paper_iterative_pricing
+proposed_label = paper_iterative_pricing
+status = supplementary_only
+heatmap_source = precomputed_csv
+heatmap_csv = outputs\stage1\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+pE_points = 150
+pN_points = 150
+common_start_pE = 0.5
+common_start_pN = 0.5
+common_start_mode = prepended_if_missing
+proposed_source = recomputed
+pricing_outer_iterations = 4
+pricing_stage2_calls = 919
+pricing_restricted_gap = 0
+bo_source = csv:outputs\stage1\stage1_traj_compare_demo\bo_trajectory.csv
+bo_points = 52
+ga_source = csv:outputs\stage1\_tmp_ga_real_gap_objective_traj\ga_trajectory.csv
+ga_points = 4
+marl_source = csv:outputs\stage1\_tmp_drl_joint_action_q\drl_trajectory.csv
+marl_points = 5
+
+[runtime]
+runtime_sec = 

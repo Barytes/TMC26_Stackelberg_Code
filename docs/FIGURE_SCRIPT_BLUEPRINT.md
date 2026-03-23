@@ -105,12 +105,26 @@ Each canonical figure script should write:
 
 ---
 
+## Paper Subsection Layout
+
+### Convergence of the Proposed Algorithms
+
+- `A1`
+  `Convergence Of Algorithm 2 Across User Scales`
+
+### Comparison with Baselines for Stackelberg Equilibrium
+
+### Impact of Alternative Strategic Settings
+
+### Sensitivity and Scalability Analysis
+
+---
+
 ## 3. Figure Index
 
 | ID | Block | Canonical script | Current reusable source | Status |
 | --- | --- | --- | --- | --- |
 | A1 | A | `scripts/run_figure_A1_stage2_social_cost_trace.py` | `scripts/run_stage2_social_cost_compare.py` | direct runner |
-| A2 | A | `scripts/run_figure_A2_stage2_social_cost_multiscale.py` | `scripts/run_stage2_social_cost_compare.py` | direct runner |
 | A3 | A | `scripts/run_figure_A3_stage2_approx_ratio_bound.py` | `scripts/run_stage2_approximation_ratio.py` | direct runner |
 | A4 | A | `scripts/run_figure_A4_stage2_runtime_vs_users.py` | none | direct runner |
 | A5 | A | `scripts/run_figure_A5_stage2_rollback_diagnostics.py` | none | direct runner |
@@ -143,59 +157,39 @@ Each canonical figure script should write:
 
 ## 4. Block A: Stage II SCM Quality
 
-### A1. Stage II Social-Cost Trace At Representative Prices
+### A1. Convergence Of Algorithm 2 Across User Scales
 
 - Canonical script:
   `scripts/run_figure_A1_stage2_social_cost_trace.py`
 - Reuse source:
   `scripts/run_stage2_social_cost_compare.py`
 - Plot type:
-  single-panel line plot
+  single-panel multi-line plot with one Algorithm-2 trace per user scale and one horizontal centralized-reference line per user scale
 - X axis:
-  Algorithm 2 outer iteration
+  `Iterations`
 - Y axis:
-  Stage II social cost
+  `Social Cost`
 - Methods:
-  proposed Stage II SCM solver
+  proposed Stage II SCM solver (`DG` / Algorithm 2)
 - Baseline / reference:
-  centralized exact Stage II reference as a horizontal dashed line
-- Repeats:
-  `1` representative instance
-- Base parameters:
-  `n = 12`, seed `2026`, fixed prices `p_E = 0.5`, `p_N = 0.5`
-- Key overrides:
-  `inner_solver_mode = primal_dual`
-- Primary output:
-  `A1_stage2_social_cost_trace.png`
-- Expected takeaway:
-  social cost should decrease quickly and terminate near the exact reference level.
-
-### A2. Stage II Social-Cost Trace Across User Scales
-
-- Canonical script:
-  `scripts/run_figure_A2_stage2_social_cost_multiscale.py`
-- Reuse source:
-  `scripts/run_stage2_social_cost_compare.py`
-- Plot type:
-  multi-line plot with one line per `n`
-- X axis:
-  Algorithm 2 outer iteration
-- Y axis:
-  Stage II social cost
-- Methods:
-  proposed Stage II SCM solver
-- Baseline / reference:
-  one horizontal reference line per `n` where exact solving is feasible
+  centralized Stage II reference solved by `pyomo_scip`, drawn as dashed horizontal lines
 - Repeats:
   `1` representative instance per `n`
 - Base parameters:
-  `n in {8, 12, 16, 20, 40, 60, 80, 100}`, seed `2026`, fixed prices `p_E = 0.5`, `p_N = 0.5`
+  use `configs/default.toml`, seed `2026`, fixed prices `p_E = 0.5`, `p_N = 0.5`, `n in {50, 100, 150, 200}`
 - Key overrides:
-  exact reference only required for `n <= 16`
-- Primary output:
-  `A2_stage2_social_cost_multiscale.png`
+  `inner_solver_mode = primal_dual`, `centralized_solver = pyomo_scip`, `max_iter_plot = 12`
+- Output images:
+  primary English image `A1_stage2_social_cost_trace.png`
+  secondary Chinese image `A1_stage2_social_cost_trace_zh.png`
+- Primary CSV:
+  `A1_stage2_social_cost_trace.csv`
+- Summary file:
+  `A1_stage2_social_cost_trace_summary.txt`
+- Language rule:
+  the script always emits one English figure and one Chinese figure from the same experiment results; the primary image language is controlled by `--lang`, and the other language is emitted as the secondary image
 - Expected takeaway:
-  iteration count remains modest as `n` grows and the solver remains well behaved.
+  across `n = 50, 100, 150, 200`, Algorithm 2 social cost should decrease over iterations and approach the corresponding centralized reference level.
 
 ### A3. Empirical Approximation Ratio Versus Theorem Bound
 
@@ -214,11 +208,11 @@ Each canonical figure script should write:
 - Baseline / reference:
   centralized exact Stage II reference provides `V(X*)`
 - Repeats:
-  `50` trials per `n`
+  `25` trials per `n`
 - Base parameters:
-  `n in {8, 12, 16}`, seeds `2026..2075`, fixed prices `p_E = 0.5`, `p_N = 0.5`
+  use `configs/default.toml`, `n in {50, 100, 150, 200}`, seeds `2026..2050`, fixed prices `p_E = 0.5`, `p_N = 0.5`
 - Key overrides:
-  use `linear` scatter as the canonical main-text figure; log transforms are supplementary only
+  use `linear` scatter as the canonical main-text figure; `centralized_solver = pyomo_scip`; log transforms are supplementary only
 - Primary output:
   `A3_stage2_approx_ratio_bound.png`
 - Expected takeaway:
@@ -515,58 +509,6 @@ Each canonical figure script should write:
 - Expected takeaway:
   both provider-side gains shrink, confirming convergence of the iterative pricing process.
 
-### C3. Price Trajectory On Restricted-Gap Heatmap
-
-- Canonical script:
-  `scripts/run_figure_C3_price_trajectory_on_gap_heatmap.py`
-- Reuse source:
-  `scripts/run_stage1_vbbr_trajectory_on_heatmap.py`
-- Plot type:
-  2D heatmap with trajectory overlay
-- X axis:
-  `p_E`
-- Y axis:
-  `p_N`
-- Color:
-  boundary-price-restricted gap
-- Overlay:
-  Stage I price path with start/end markers
-- Methods:
-  proposed Stage I solver
-- Repeats:
-  `1` representative instance
-- Base parameters:
-  `n = 12`, seed `2026`, price grid `81 x 81`, `stage1_solver_variant = vbbr_brd`
-- Primary output:
-  `C3_price_trajectory_on_gap_heatmap.png`
-- Expected takeaway:
-  the pricing path moves toward the low-gap region rather than wandering over the full plane.
-
-### C4. Final Restricted Gap Versus Evaluation Budget
-
-- Canonical script:
-  `scripts/run_figure_C4_final_gap_vs_budget.py`
-- Reuse source:
-  none
-- Plot type:
-  line plot with error bars
-- X axis:
-  evaluation budget measured by Stage II calls or equivalent price evaluations
-- Y axis:
-  final restricted gap
-- Methods:
-  proposed Stage I solver, `GSO`, `GA`, `BO`, `MARL`
-- Repeats:
-  `20` trials per point
-- Base parameters:
-  `n in {8, 12, 16}`, seeds `2026..2045`, common budget grid such as `{16, 32, 64, 96, 128}`
-- Special rule:
-  `GSO` is shown only on small instances where dense-grid search is feasible
-- Primary output:
-  `C4_final_gap_vs_budget.png`
-- Expected takeaway:
-  the proposed method reaches small restricted gap faster than black-box alternatives under comparable budgets.
-
 ### C5. Supplementary Trajectory Comparison On Gap Heatmap
 
 - Canonical script:
@@ -595,29 +537,6 @@ Each canonical figure script should write:
 ---
 
 ## 7. Block D: Runtime And Scalability
-
-### D1. Stage II Runtime Versus Number Of Users
-
-- Canonical script:
-  `scripts/run_figure_D1_stage2_runtime_vs_users.py`
-- Reuse source:
-  none
-- Plot type:
-  line plot with mean ± std error bars
-- X axis:
-  number of users
-- Y axis:
-  runtime in seconds
-- Methods:
-  proposed Stage II SCM solver
-- Baseline / reference:
-  centralized exact solver where feasible
-- Repeats:
-  `10` trials per `n`
-- Base parameters:
-  `n in {8, 12, 16, 20, 40, 60, 80, 100}`, fixed prices `p_E = 0.5`, `p_N = 0.5`
-- Primary output:
-  `D1_stage2_runtime_vs_users.png`
 
 ### D2. Stage I Runtime Versus Number Of Users
 

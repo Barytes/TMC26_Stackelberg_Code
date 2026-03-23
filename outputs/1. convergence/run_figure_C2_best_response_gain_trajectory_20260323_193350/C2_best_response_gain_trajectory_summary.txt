@@ -1,0 +1,29 @@
+[run]
+figure_id = C2
+block = C
+script = run_figure_C2_best_response_gain_trajectory.py
+output_dir = outputs\run_figure_C2_best_response_gain_trajectory_20260323_193350
+
+[artifacts]
+primary_image = C2_best_response_gain_trajectory.png
+primary_csv = C2_best_response_gain_trajectory.csv
+summary_file = C2_best_response_gain_trajectory_summary.txt
+
+[inputs]
+config = configs\_tmp_default_paper_iterative_pricing.toml
+seed = 2026
+n_users = 100
+n_trials = 10
+
+[primary_metrics]
+center_statistic = mean
+band_statistic = std
+grid_true_gain_source = heatmap_csv_nearest
+plot_layout = single_axes_overlay
+grid_true_gain_heatmap_csv = outputs\stage1\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+grid_true_gain_definition = at the nearest heatmap grid point to each trajectory price, ESP gain is the rowwise best-response revenue improvement on the heatmap and NSP gain is the columnwise best-response revenue improvement on the heatmap
+source_c1_run = outputs\run_figure_C1_restricted_gap_trajectory_20260323_151430
+trajectory_replay_verified = true
+
+[runtime]
+runtime_sec = 

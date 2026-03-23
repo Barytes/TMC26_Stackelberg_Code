@@ -30,13 +30,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from _figure_output_schema import write_standard_figure_summary
+from _figure_output_schema import load_figure_manifest, write_standard_figure_summary
 from _figure_wrapper_utils import load_csv_rows, resolve_out_dir, write_csv_rows
 import run_stage2_approximation_ratio as s2_ratio
 import run_boundary_hypothesis_check as boundary_diag
 from tmc26_exp.baselines import (
     BaselineOutcome,
+    _grid_ne_gap_audit,
     _solve_centralized_minlp,
+    _stage2_solver,
     baseline_coop,
     baseline_market_equilibrium,
     baseline_random_offloading,
@@ -193,7 +195,7 @@ def _plot_three_panel(
     plt.close(fig)
 
 
-def _aligned_series(sequences: list[list[float]]) -> tuple[np.ndarray, np.ndarray]:
+def _aligned_sequence_matrix(sequences: list[list[float]]) -> np.ndarray:
     max_len = max(len(seq) for seq in sequences)
     arr = np.full((len(sequences), max_len), np.nan, dtype=float)
     for i, seq in enumerate(sequences):
@@ -201,7 +203,711 @@ def _aligned_series(sequences: list[list[float]]) -> tuple[np.ndarray, np.ndarra
         arr[i, : seq_arr.size] = seq_arr
         if seq_arr.size < max_len and seq_arr.size > 0:
             arr[i, seq_arr.size :] = seq_arr[-1]
+    return arr
+
+
+def _aligned_series(sequences: list[list[float]]) -> tuple[np.ndarray, np.ndarray]:
+    arr = _aligned_sequence_matrix(sequences)
     return np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
+
+
+def _aligned_quantile_band(sequences: list[list[float]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    arr = _aligned_sequence_matrix(sequences)
+    median = np.nanmedian(arr, axis=0)
+    q25 = np.nanquantile(arr, 0.25, axis=0)
+    q75 = np.nanquantile(arr, 0.75, axis=0)
+    return median, q25, q75
+
+
+def _c1_grid_gap_audit_grids(cfg: ExperimentConfig) -> tuple[np.ndarray, np.ndarray]:
+    pE_grid = np.linspace(float(cfg.system.cE), float(cfg.baselines.max_price_E), max(2, int(cfg.baselines.gso_grid_points)))
+    pN_grid = np.linspace(float(cfg.system.cN), float(cfg.baselines.max_price_N), max(2, int(cfg.baselines.gso_grid_points)))
+    return pE_grid, pN_grid
+
+
+def _c1_compute_grid_ne_gap(
+    users,
+    cfg: ExperimentConfig,
+    pE: float,
+    pN: float,
+    stage2_cache: dict[tuple[float, float], BaselineOutcome],
+) -> float:
+    key = (round(float(pE), 12), round(float(pN), 12))
+    if key in stage2_cache:
+        current_out = stage2_cache[key]
+    else:
+        current_out = _stage2_solver(
+            cfg.baselines.stage2_solver_for_pricing,
+            users,
+            float(pE),
+            float(pN),
+            cfg.system,
+            cfg.stackelberg,
+            cfg.baselines,
+        )
+        stage2_cache[key] = current_out
+    pE_audit_grid, pN_audit_grid = _c1_grid_gap_audit_grids(cfg)
+    return float(
+        _grid_ne_gap_audit(
+            current_out,
+            users,
+            cfg.system,
+            cfg.stackelberg,
+            cfg.baselines,
+            stage2_cache,
+            pE_audit_grid,
+            pN_audit_grid,
+        )
+    )
+
+
+def _load_grid_ne_gap_surface(csv_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rows = load_csv_rows(csv_path)
+    if not rows:
+        raise ValueError(f"Grid CSV is empty: {csv_path}")
+    header = set(rows[0].keys())
+    if "grid_ne_gap" in header:
+        gap_key = "grid_ne_gap"
+    elif "eps" in header:
+        gap_key = "eps"
+    else:
+        raise ValueError(f"Grid CSV must contain 'grid_ne_gap' or legacy alias 'eps': {csv_path}")
+
+    pE_grid = np.asarray(sorted({float(row["pE"]) for row in rows}), dtype=float)
+    pN_grid = np.asarray(sorted({float(row["pN"]) for row in rows}), dtype=float)
+    e_map = {float(value): idx for idx, value in enumerate(pE_grid)}
+    n_map = {float(value): idx for idx, value in enumerate(pN_grid)}
+    grid = np.full((pN_grid.size, pE_grid.size), np.nan, dtype=float)
+    for row in rows:
+        i = e_map[float(row["pE"])]
+        j = n_map[float(row["pN"])]
+        grid[j, i] = float(row[gap_key])
+    if np.any(~np.isfinite(grid)):
+        raise ValueError(f"Grid CSV is incomplete: {csv_path}")
+    return pE_grid, pN_grid, grid
+
+
+def _load_revenue_surfaces(csv_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    rows = load_csv_rows(csv_path)
+    if not rows:
+        raise ValueError(f"Grid CSV is empty: {csv_path}")
+    required = {"pE", "pN", "esp_revenue", "nsp_revenue"}
+    missing = required - set(rows[0].keys())
+    if missing:
+        raise ValueError(f"Grid CSV missing required columns {sorted(missing)}: {csv_path}")
+
+    pE_grid = np.asarray(sorted({float(row["pE"]) for row in rows}), dtype=float)
+    pN_grid = np.asarray(sorted({float(row["pN"]) for row in rows}), dtype=float)
+    e_map = {float(value): idx for idx, value in enumerate(pE_grid)}
+    n_map = {float(value): idx for idx, value in enumerate(pN_grid)}
+    esp_revenue = np.full((pN_grid.size, pE_grid.size), np.nan, dtype=float)
+    nsp_revenue = np.full((pN_grid.size, pE_grid.size), np.nan, dtype=float)
+    for row in rows:
+        i = e_map[float(row["pE"])]
+        j = n_map[float(row["pN"])]
+        esp_revenue[j, i] = float(row["esp_revenue"])
+        nsp_revenue[j, i] = float(row["nsp_revenue"])
+    if np.any(~np.isfinite(esp_revenue)) or np.any(~np.isfinite(nsp_revenue)):
+        raise ValueError(f"Grid CSV is incomplete: {csv_path}")
+    return pE_grid, pN_grid, esp_revenue, nsp_revenue
+
+
+def _nearest_grid_indices(
+    pE: float,
+    pN: float,
+    *,
+    pE_grid: np.ndarray,
+    pN_grid: np.ndarray,
+) -> tuple[int, int]:
+    i = int(np.argmin(np.abs(pE_grid - float(pE))))
+    j = int(np.argmin(np.abs(pN_grid - float(pN))))
+    return i, j
+
+
+def _nearest_grid_ne_gap(
+    pE: float,
+    pN: float,
+    *,
+    pE_grid: np.ndarray,
+    pN_grid: np.ndarray,
+    grid_ne_gap: np.ndarray,
+) -> float:
+    i = int(np.argmin(np.abs(pE_grid - float(pE))))
+    j = int(np.argmin(np.abs(pN_grid - float(pN))))
+    return float(grid_ne_gap[j, i])
+
+
+def _grid_true_gains_from_surface(
+    pE: float,
+    pN: float,
+    *,
+    pE_grid: np.ndarray,
+    pN_grid: np.ndarray,
+    esp_revenue: np.ndarray,
+    nsp_revenue: np.ndarray,
+) -> tuple[float, float]:
+    i, j = _nearest_grid_indices(pE, pN, pE_grid=pE_grid, pN_grid=pN_grid)
+    current_esp = float(esp_revenue[j, i])
+    current_nsp = float(nsp_revenue[j, i])
+    best_esp = float(np.nanmax(esp_revenue[j, :]))
+    best_nsp = float(np.nanmax(nsp_revenue[:, i]))
+    return max(0.0, best_esp - current_esp), max(0.0, best_nsp - current_nsp)
+
+
+def _c1_trial_rows_from_result(
+    *,
+    trial: int,
+    users,
+    cfg: ExperimentConfig,
+    result,
+    restricted_override: list[float] | None = None,
+) -> tuple[list[dict[str, object]], list[float], list[float]]:
+    stage2_cache: dict[tuple[float, float], BaselineOutcome] = {}
+    rows: list[dict[str, object]] = []
+    restricted_seq: list[float] = []
+    grid_seq: list[float] = []
+
+    if result.trajectory:
+        step_payloads = [
+            (
+                float(step.pE),
+                float(step.pN),
+                float(step.restricted_gap if np.isfinite(step.restricted_gap) else step.epsilon),
+            )
+            for step in result.trajectory
+        ]
+    else:
+        fallback_gap = float(result.restricted_gap if np.isfinite(result.restricted_gap) else result.epsilon)
+        step_payloads = [(float(result.price[0]), float(result.price[1]), fallback_gap)]
+
+    if restricted_override is not None and len(restricted_override) != len(step_payloads):
+        raise ValueError(
+            f"Trial {trial}: restricted-gap length mismatch between saved CSV ({len(restricted_override)}) "
+            f"and replayed trajectory ({len(step_payloads)})."
+        )
+
+    for step_idx, (pE, pN, restricted_gap) in enumerate(step_payloads, start=1):
+        restricted_value = float(restricted_override[step_idx - 1]) if restricted_override is not None else float(restricted_gap)
+        grid_gap = _c1_compute_grid_ne_gap(users, cfg, pE, pN, stage2_cache)
+        rows.append(
+            {
+                "trial": int(trial),
+                "iteration": int(step_idx),
+                "pE": float(pE),
+                "pN": float(pN),
+                "restricted_gap": float(restricted_value),
+                "grid_ne_gap": float(grid_gap),
+            }
+        )
+        restricted_seq.append(float(restricted_value))
+        grid_seq.append(float(grid_gap))
+    return rows, restricted_seq, grid_seq
+
+
+def _plot_c1_dual_gap_trajectories(
+    restricted_sequences: list[list[float]],
+    grid_sequences: list[list[float]],
+    *,
+    stopping_tol: float,
+    out_path: Path,
+) -> None:
+    restricted_median, restricted_q25, restricted_q75 = _aligned_quantile_band(restricted_sequences)
+    grid_median, grid_q25, grid_q75 = _aligned_quantile_band(grid_sequences)
+
+    fig, ax = plt.subplots(figsize=(8.6, 5.4), dpi=150)
+    x = np.arange(1, restricted_median.size + 1)
+    ax.plot(x, restricted_median, marker="o", linewidth=1.9, color="tab:blue", label="Restricted gap (median)")
+    ax.fill_between(x, restricted_q25, restricted_q75, alpha=0.18, color="tab:blue", label="Restricted gap (25%-75%)")
+    ax.plot(x, grid_median, marker="s", linewidth=1.8, linestyle="--", color="tab:orange", label="Grid NE gap (median)")
+    ax.fill_between(x, grid_q25, grid_q75, alpha=0.14, color="tab:orange", label="Grid NE gap (25%-75%)")
+    ax.axhline(stopping_tol, color="black", linestyle="--", linewidth=1.2, label="Stopping tolerance")
+    ax.set_xlabel("Stage I iteration")
+    ax.set_ylabel("Gap value")
+    ax.set_title("Stage-I restricted-gap and grid-NE-gap trajectories")
+    ax.grid(alpha=0.25)
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _write_c1_outputs(
+    *,
+    out_dir: Path,
+    rows: list[dict[str, object]],
+    restricted_sequences: list[list[float]],
+    grid_sequences: list[list[float]],
+    config_path: str,
+    seed: int,
+    n_users: int,
+    trials: int,
+    cfg: ExperimentConfig,
+    replay_verified: bool | None = None,
+    grid_ne_gap_source: str = "audit_grid",
+    grid_ne_gap_source_path: str | None = None,
+) -> None:
+    stopping_tol = float(cfg.stackelberg.paper_restricted_gap_tol)
+    write_csv_rows(
+        out_dir / "C1_restricted_gap_trajectory.csv",
+        ["trial", "iteration", "pE", "pN", "restricted_gap", "grid_ne_gap"],
+        rows,
+    )
+    _plot_c1_dual_gap_trajectories(
+        restricted_sequences,
+        grid_sequences,
+        stopping_tol=stopping_tol,
+        out_path=out_dir / "C1_restricted_gap_trajectory.png",
+    )
+    summary_lines = [
+        f"config = {config_path}",
+        f"seed = {seed}",
+        f"n_users = {n_users}",
+        f"trials = {trials}",
+        "center_statistic = median",
+        "band_statistic = q25_q75",
+        f"stopping_tolerance = {stopping_tol}",
+        f"grid_ne_gap_source = {grid_ne_gap_source}",
+    ]
+    if grid_ne_gap_source == "audit_grid":
+        summary_lines.extend(
+            [
+                f"grid_ne_gap_stage2_method = {cfg.baselines.stage2_solver_for_pricing}",
+                f"grid_ne_gap_audit_points = {int(cfg.baselines.gso_grid_points)}",
+                "grid_ne_gap_definition = max unilateral revenue gain on the audit price grid with the other provider price fixed",
+            ]
+        )
+    elif grid_ne_gap_source == "heatmap_csv_nearest":
+        if grid_ne_gap_source_path is not None:
+            summary_lines.append(f"grid_ne_gap_heatmap_csv = {grid_ne_gap_source_path}")
+        summary_lines.append(
+            "grid_ne_gap_definition = precomputed grid_ne_gap surface value at the nearest heatmap grid point to each trajectory price"
+        )
+    else:
+        summary_lines.append("grid_ne_gap_definition = unspecified")
+    if replay_verified is not None:
+        summary_lines.append(f"trajectory_replay_verified = {str(bool(replay_verified)).lower()}")
+    _write_summary(out_dir / "C1_restricted_gap_trajectory_summary.txt", summary_lines)
+
+
+def _c2_trial_rows_from_result(
+    *,
+    trial: int,
+    result,
+) -> tuple[list[dict[str, object]], list[float], list[float], list[tuple[float, float]], list[float]]:
+    rows: list[dict[str, object]] = []
+    if result.trajectory:
+        step_payloads = [
+            (
+                float(step.pE),
+                float(step.pN),
+                float(step.esp_gain if np.isfinite(step.esp_gain) else 0.0),
+                float(step.nsp_gain if np.isfinite(step.nsp_gain) else 0.0),
+                float(step.restricted_gap if np.isfinite(step.restricted_gap) else step.epsilon),
+            )
+            for step in result.trajectory
+        ]
+    else:
+        step_payloads = [
+            (
+                float(result.price[0]),
+                float(result.price[1]),
+                float(result.gain_E.gain),
+                float(result.gain_N.gain),
+                float(result.restricted_gap if np.isfinite(result.restricted_gap) else result.epsilon),
+            )
+        ]
+    seq_E: list[float] = []
+    seq_N: list[float] = []
+    prices: list[tuple[float, float]] = []
+    restricted_seq: list[float] = []
+    for step_idx, (pE, pN, gE, gN, restricted_gap) in enumerate(step_payloads, start=1):
+        rows.append(
+            {
+                "trial": int(trial),
+                "iteration": int(step_idx),
+                "pE": float(pE),
+                "pN": float(pN),
+                "esp_gain": float(gE),
+                "nsp_gain": float(gN),
+                "restricted_gap": float(restricted_gap),
+            }
+        )
+        seq_E.append(float(gE))
+        seq_N.append(float(gN))
+        prices.append((float(pE), float(pN)))
+        restricted_seq.append(float(restricted_gap))
+    return rows, seq_E, seq_N, prices, restricted_seq
+
+
+def _c2_attach_grid_true_gains(
+    rows: list[dict[str, object]],
+    *,
+    pE_grid: np.ndarray,
+    pN_grid: np.ndarray,
+    esp_revenue: np.ndarray,
+    nsp_revenue: np.ndarray,
+) -> tuple[list[dict[str, object]], list[float], list[float]]:
+    updated_rows: list[dict[str, object]] = []
+    seq_E: list[float] = []
+    seq_N: list[float] = []
+    for row in rows:
+        grid_true_esp_gain, grid_true_nsp_gain = _grid_true_gains_from_surface(
+            float(row["pE"]),
+            float(row["pN"]),
+            pE_grid=pE_grid,
+            pN_grid=pN_grid,
+            esp_revenue=esp_revenue,
+            nsp_revenue=nsp_revenue,
+        )
+        updated = dict(row)
+        updated["grid_true_esp_gain"] = float(grid_true_esp_gain)
+        updated["grid_true_nsp_gain"] = float(grid_true_nsp_gain)
+        updated["grid_true_gap"] = float(max(grid_true_esp_gain, grid_true_nsp_gain))
+        updated_rows.append(updated)
+        seq_E.append(float(grid_true_esp_gain))
+        seq_N.append(float(grid_true_nsp_gain))
+    return updated_rows, seq_E, seq_N
+
+
+def _plot_c2_gain_panel(
+    ax,
+    seq_E: list[list[float]],
+    seq_N: list[list[float]],
+    *,
+    title: str,
+    label_prefix: str = "",
+    linestyle: str = "-",
+    band_alpha: float = 0.18,
+) -> None:
+    mean_E, std_E = _aligned_series(seq_E)
+    mean_N, std_N = _aligned_series(seq_N)
+    x = np.arange(1, mean_E.size + 1)
+    ax.plot(
+        x,
+        mean_E,
+        marker="o",
+        linewidth=1.8,
+        linestyle=linestyle,
+        color="tab:blue",
+        label=f"{label_prefix}ESP gain",
+    )
+    ax.fill_between(x, mean_E - std_E, mean_E + std_E, alpha=band_alpha, color="tab:blue")
+    ax.plot(
+        x,
+        mean_N,
+        marker="s",
+        linewidth=1.8,
+        linestyle=linestyle,
+        color="tab:orange",
+        label=f"{label_prefix}NSP gain",
+    )
+    ax.fill_between(x, mean_N - std_N, mean_N + std_N, alpha=band_alpha, color="tab:orange")
+    ax.set_xlabel("Stage I iteration")
+    ax.set_ylabel("Best-response gain")
+    ax.set_title(title)
+    ax.grid(alpha=0.25)
+
+
+def _write_c2_outputs(
+    *,
+    out_dir: Path,
+    rows: list[dict[str, object]],
+    seq_E: list[list[float]],
+    seq_N: list[list[float]],
+    config_path: str,
+    seed: int,
+    n_users: int,
+    trials: int,
+    grid_seq_E: list[list[float]] | None = None,
+    grid_seq_N: list[list[float]] | None = None,
+    grid_gain_source_path: str | None = None,
+    source_c1_run: str | None = None,
+    replay_verified: bool | None = None,
+) -> None:
+    fieldnames = ["trial", "iteration", "pE", "pN", "esp_gain", "nsp_gain", "restricted_gap"]
+    have_grid_true = grid_seq_E is not None and grid_seq_N is not None
+    if have_grid_true:
+        fieldnames.extend(["grid_true_esp_gain", "grid_true_nsp_gain", "grid_true_gap"])
+    write_csv_rows(
+        out_dir / "C2_best_response_gain_trajectory.csv",
+        fieldnames,
+        rows,
+    )
+    if have_grid_true:
+        fig, ax = plt.subplots(figsize=(9.4, 5.6), dpi=150)
+        _plot_c2_gain_panel(
+            ax,
+            seq_E,
+            seq_N,
+            title="Best-response gain trajectories",
+            label_prefix="Restricted ",
+            linestyle="-",
+            band_alpha=0.16,
+        )
+        _plot_c2_gain_panel(
+            ax,
+            grid_seq_E,
+            grid_seq_N,
+            title="Best-response gain trajectories",
+            label_prefix="Grid true ",
+            linestyle="--",
+            band_alpha=0.08,
+        )
+        ax.legend(loc="best", fontsize=8, ncol=2)
+        fig.tight_layout()
+    else:
+        fig, ax = plt.subplots(figsize=(8.2, 5.2), dpi=150)
+        _plot_c2_gain_panel(ax, seq_E, seq_N, title="Best-response gain trajectories")
+        ax.legend(loc="best", fontsize=8)
+        fig.tight_layout()
+    fig.savefig(out_dir / "C2_best_response_gain_trajectory.png")
+    plt.close(fig)
+
+    summary_lines = [
+        f"config = {config_path}",
+        f"seed = {seed}",
+        f"n_users = {n_users}",
+        f"trials = {trials}",
+        "center_statistic = mean",
+        "band_statistic = std",
+    ]
+    if have_grid_true:
+        summary_lines.append("grid_true_gain_source = heatmap_csv_nearest")
+        summary_lines.append("plot_layout = single_axes_overlay")
+        if grid_gain_source_path is not None:
+            summary_lines.append(f"grid_true_gain_heatmap_csv = {grid_gain_source_path}")
+        summary_lines.append(
+            "grid_true_gain_definition = at the nearest heatmap grid point to each trajectory price, "
+            "ESP gain is the rowwise best-response revenue improvement on the heatmap and NSP gain is the columnwise "
+            "best-response revenue improvement on the heatmap"
+        )
+    if source_c1_run is not None:
+        summary_lines.append(f"source_c1_run = {source_c1_run}")
+    if replay_verified is not None:
+        summary_lines.append(f"trajectory_replay_verified = {str(bool(replay_verified)).lower()}")
+    _write_summary(out_dir / "C2_best_response_gain_trajectory_summary.txt", summary_lines)
+
+
+def _load_c1_rows_by_trial(run_dir: Path) -> dict[int, list[dict[str, str]]]:
+    rows = load_csv_rows(run_dir / "C1_restricted_gap_trajectory.csv")
+    if not rows:
+        raise ValueError(f"C1 CSV is empty or missing: {run_dir / 'C1_restricted_gap_trajectory.csv'}")
+    by_trial: dict[int, list[dict[str, str]]] = {}
+    for row in rows:
+        trial = int(row["trial"])
+        by_trial.setdefault(trial, []).append(row)
+    for trial_rows in by_trial.values():
+        trial_rows.sort(key=lambda row: int(row["iteration"]))
+    return by_trial
+
+
+def _load_c2_rows_by_trial(run_dir: Path) -> dict[int, list[dict[str, str]]]:
+    rows = load_csv_rows(run_dir / "C2_best_response_gain_trajectory.csv")
+    if not rows:
+        raise ValueError(f"C2 CSV is empty or missing: {run_dir / 'C2_best_response_gain_trajectory.csv'}")
+    by_trial: dict[int, list[dict[str, str]]] = {}
+    for row in rows:
+        trial = int(row["trial"])
+        by_trial.setdefault(trial, []).append(row)
+    for trial_rows in by_trial.values():
+        trial_rows.sort(key=lambda row: int(row["iteration"]))
+    return by_trial
+
+
+def _resolve_existing_path(path_text: str, *, base_dir: Path | None = None) -> Path:
+    raw = Path(path_text)
+    candidates: list[Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.extend([raw, ROOT / raw])
+        if base_dir is not None:
+            candidates.append(base_dir / raw)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _grid_gain_csv_from_c1_manifest(manifest: dict[str, object]) -> str | None:
+    primary_metrics = manifest.get("primary_metrics")
+    if not isinstance(primary_metrics, dict):
+        return None
+    value = str(primary_metrics.get("grid_ne_gap_heatmap_csv", "")).strip()
+    return value or None
+
+
+def _run_c2_replot_from_existing_run(c2_run_dir: Path) -> None:
+    if not c2_run_dir.is_absolute():
+        c2_run_dir = _resolve_existing_path(str(c2_run_dir))
+    manifest_path = c2_run_dir / "figure_manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"Missing C2 manifest: {manifest_path}")
+    manifest = load_figure_manifest(manifest_path)
+    if str(manifest.get("figure_id", "")) != "C2":
+        raise ValueError(f"Expected a C2 run directory, got figure_id={manifest.get('figure_id', '')!r}")
+
+    config_path = str(manifest.get("config", "")).strip()
+    seed = int(manifest.get("seed", "0"))
+    n_users = int(manifest.get("n_users", "0"))
+    trials = int(manifest.get("n_trials", "0"))
+    primary_metrics = manifest.get("primary_metrics", {})
+    if not isinstance(primary_metrics, dict):
+        primary_metrics = {}
+
+    rows_by_trial = _load_c2_rows_by_trial(c2_run_dir)
+    rows: list[dict[str, object]] = []
+    seq_E: list[list[float]] = []
+    seq_N: list[list[float]] = []
+    grid_seq_E: list[list[float]] = []
+    grid_seq_N: list[list[float]] = []
+    have_grid_true = False
+
+    for trial in sorted(rows_by_trial):
+        trial_rows = rows_by_trial[trial]
+        rows.extend(
+            {
+                key: (
+                    float(value)
+                    if key
+                    in {
+                        "pE",
+                        "pN",
+                        "esp_gain",
+                        "nsp_gain",
+                        "restricted_gap",
+                        "grid_true_esp_gain",
+                        "grid_true_nsp_gain",
+                        "grid_true_gap",
+                    }
+                    else int(value)
+                    if key in {"trial", "iteration"}
+                    else value
+                )
+                for key, value in row.items()
+                if key not in {"figure_id", "block"}
+            }
+            for row in trial_rows
+        )
+        seq_E.append([float(row["esp_gain"]) for row in trial_rows])
+        seq_N.append([float(row["nsp_gain"]) for row in trial_rows])
+        if {"grid_true_esp_gain", "grid_true_nsp_gain"} <= set(trial_rows[0].keys()):
+            have_grid_true = True
+            grid_seq_E.append([float(row["grid_true_esp_gain"]) for row in trial_rows])
+            grid_seq_N.append([float(row["grid_true_nsp_gain"]) for row in trial_rows])
+
+    _write_c2_outputs(
+        out_dir=c2_run_dir,
+        rows=rows,
+        seq_E=seq_E,
+        seq_N=seq_N,
+        config_path=config_path,
+        seed=seed,
+        n_users=n_users,
+        trials=trials,
+        grid_seq_E=(grid_seq_E if have_grid_true else None),
+        grid_seq_N=(grid_seq_N if have_grid_true else None),
+        grid_gain_source_path=(
+            str(primary_metrics.get("grid_true_gain_heatmap_csv", "")).strip() or None
+        ),
+        source_c1_run=(str(primary_metrics.get("source_c1_run", "")).strip() or None),
+        replay_verified=(
+            str(primary_metrics.get("trajectory_replay_verified", "")).strip().lower() == "true"
+            if "trajectory_replay_verified" in primary_metrics
+            else None
+        ),
+    )
+
+
+def _run_c2_from_c1_run(c1_run_dir: Path, out_dir: Path, *, grid_gain_csv: str | None = None) -> None:
+    if not c1_run_dir.is_absolute():
+        c1_run_dir = _resolve_existing_path(str(c1_run_dir))
+    manifest_path = c1_run_dir / "figure_manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"Missing C1 manifest: {manifest_path}")
+    manifest = load_figure_manifest(manifest_path)
+    if str(manifest.get("figure_id", "")) != "C1":
+        raise ValueError(f"Expected a C1 run directory, got figure_id={manifest.get('figure_id', '')!r}")
+
+    config_path = str(manifest.get("config", "")).strip()
+    if not config_path:
+        raise ValueError(f"C1 manifest does not record a config path: {manifest_path}")
+    seed = int(manifest.get("seed", "0"))
+    n_users = int(manifest.get("n_users", "0"))
+    trials = int(manifest.get("n_trials", "0"))
+    if n_users <= 0 or trials <= 0:
+        raise ValueError(f"Invalid n_users/trials in C1 manifest: {manifest_path}")
+
+    cfg = _load_cfg(config_path, n_users=n_users)
+    saved_by_trial = _load_c1_rows_by_trial(c1_run_dir)
+    grid_gain_csv_text = grid_gain_csv or _grid_gain_csv_from_c1_manifest(manifest)
+    if grid_gain_csv_text:
+        grid_gain_path = _resolve_existing_path(grid_gain_csv_text, base_dir=c1_run_dir)
+        heatmap_pE_grid, heatmap_pN_grid, heatmap_esp_rev, heatmap_nsp_rev = _load_revenue_surfaces(grid_gain_path)
+    else:
+        grid_gain_path = None
+        heatmap_pE_grid = np.asarray([], dtype=float)
+        heatmap_pN_grid = np.asarray([], dtype=float)
+        heatmap_esp_rev = np.asarray([[]], dtype=float)
+        heatmap_nsp_rev = np.asarray([[]], dtype=float)
+
+    rows: list[dict[str, object]] = []
+    seq_E: list[list[float]] = []
+    seq_N: list[list[float]] = []
+    grid_seq_E: list[list[float]] = []
+    grid_seq_N: list[list[float]] = []
+    tol = 1e-9
+
+    for trial in range(1, trials + 1):
+        if trial not in saved_by_trial:
+            raise ValueError(f"Missing saved C1 rows for trial {trial}.")
+        saved_rows = saved_by_trial[trial]
+        users = _sample_users(cfg, n_users, seed, trial)
+        result = solve_stage1_pricing(users, cfg.system, cfg.stackelberg)
+        trial_rows, sE, sN, _, _ = _c2_trial_rows_from_result(trial=trial, result=result)
+        if len(trial_rows) != len(saved_rows):
+            raise ValueError(
+                f"Trial {trial}: saved C1 trajectory length {len(saved_rows)} "
+                f"does not match replayed trajectory length {len(trial_rows)}."
+            )
+        for step_idx, (saved, replay) in enumerate(zip(saved_rows, trial_rows), start=1):
+            for key in ("pE", "pN", "restricted_gap"):
+                saved_val = float(saved[key])
+                replay_val = float(replay[key])
+                if abs(saved_val - replay_val) > tol:
+                    raise ValueError(
+                        f"Trial {trial}, iteration {step_idx}: saved C1 {key}={saved_val:.12g} "
+                        f"does not match replayed value {replay_val:.12g}."
+                    )
+        if grid_gain_path is not None:
+            trial_rows, grid_sE, grid_sN = _c2_attach_grid_true_gains(
+                trial_rows,
+                pE_grid=heatmap_pE_grid,
+                pN_grid=heatmap_pN_grid,
+                esp_revenue=heatmap_esp_rev,
+                nsp_revenue=heatmap_nsp_rev,
+            )
+            grid_seq_E.append(grid_sE)
+            grid_seq_N.append(grid_sN)
+        rows.extend(trial_rows)
+        seq_E.append(sE)
+        seq_N.append(sN)
+
+    _write_c2_outputs(
+        out_dir=out_dir,
+        rows=rows,
+        seq_E=seq_E,
+        seq_N=seq_N,
+        config_path=config_path,
+        seed=seed,
+        n_users=n_users,
+        trials=trials,
+        grid_seq_E=(grid_seq_E if grid_gain_path is not None else None),
+        grid_seq_N=(grid_seq_N if grid_gain_path is not None else None),
+        grid_gain_source_path=(str(grid_gain_path) if grid_gain_path is not None else None),
+        source_c1_run=str(c1_run_dir),
+        replay_verified=True,
+    )
 
 
 def _compute_restricted_gap(users, system, stack_cfg, price: tuple[float, float], offloading_set: tuple[int, ...]) -> float:
@@ -462,7 +1168,7 @@ def main_B6() -> None:
     _write_summary(out_dir / "B6_candidate_family_diagnostics_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"n_users = {args.n_users}", f"candidate_family_size = {len(rows_sorted)}"])
 
 
-def main_C1() -> None:
+def _legacy_main_C1() -> None:
     parser = argparse.ArgumentParser(description="Figure C1: restricted-gap trajectory.")
     parser.add_argument("--config", type=str, default="configs/figures/paper_base.toml")
     parser.add_argument("--seed", type=int, default=2026)
@@ -484,12 +1190,15 @@ def main_C1() -> None:
         sequences.append(seq)
         for step_idx, value in enumerate(seq, start=1):
             rows.append({"trial": trial, "iteration": step_idx, "restricted_gap": float(value)})
-    mean, std = _aligned_series(sequences)
+    median, q25, q75 = _aligned_quantile_band(sequences)
+    stopping_tol = float(cfg.stackelberg.paper_restricted_gap_tol)
     write_csv_rows(out_dir / "C1_restricted_gap_trajectory.csv", ["trial", "iteration", "restricted_gap"], rows)
     fig, ax = plt.subplots(figsize=(8.2, 5.2), dpi=150)
-    x = np.arange(1, mean.size + 1)
-    ax.plot(x, mean, marker="o", linewidth=1.8, label="Mean")
+    x = np.arange(1, median.size + 1)
+    ax.plot(x, median, marker="o", linewidth=1.8, label="Median")
     ax.fill_between(x, mean - std, mean + std, alpha=0.2, label="Mean ± std")
+    ax.fill_between(x, q25, q75, alpha=0.2, label="25%-75% quantile")
+    ax.axhline(stopping_tol, color="black", linestyle="--", linewidth=1.2, label="Stopping tolerance")
     ax.set_xlabel("Stage I iteration")
     ax.set_ylabel("Restricted gap")
     ax.set_title("Restricted-gap trajectory")
@@ -501,51 +1210,290 @@ def main_C1() -> None:
     _write_summary(out_dir / "C1_restricted_gap_trajectory_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"n_users = {args.n_users}", f"trials = {args.trials}"])
 
 
+def main_C1() -> None:
+    parser = argparse.ArgumentParser(description="Figure C1: restricted-gap trajectory.")
+    parser.add_argument("--config", type=str, default="configs/figures/paper_base.toml")
+    parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--n-users", type=int, default=20)
+    parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--grid-ne-gap-csv", type=str, default=None)
+    parser.add_argument("--out-dir", type=str, default=None)
+    args = parser.parse_args()
+
+    out_dir = resolve_out_dir("run_figure_C1_restricted_gap_trajectory", args.out_dir)
+    cfg = _load_cfg(args.config, n_users=args.n_users)
+    if args.grid_ne_gap_csv is not None:
+        csv_path = _resolve_existing_path(str(args.grid_ne_gap_csv))
+        heatmap_pE_grid, heatmap_pN_grid, heatmap_grid_ne_gap = _load_grid_ne_gap_surface(csv_path)
+        grid_source = "heatmap_csv_nearest"
+        grid_source_path = str(csv_path)
+    else:
+        heatmap_pE_grid = np.asarray([], dtype=float)
+        heatmap_pN_grid = np.asarray([], dtype=float)
+        heatmap_grid_ne_gap = np.asarray([[]], dtype=float)
+        grid_source = "audit_grid"
+        grid_source_path = None
+    rows: list[dict[str, object]] = []
+    restricted_sequences: list[list[float]] = []
+    grid_sequences: list[list[float]] = []
+    for trial in range(1, args.trials + 1):
+        users = _sample_users(cfg, args.n_users, args.seed, trial)
+        res = solve_stage1_pricing(users, cfg.system, cfg.stackelberg)
+        if grid_source == "heatmap_csv_nearest":
+            if res.trajectory:
+                step_payloads = [
+                    (
+                        float(step.pE),
+                        float(step.pN),
+                        float(step.restricted_gap if np.isfinite(step.restricted_gap) else step.epsilon),
+                    )
+                    for step in res.trajectory
+                ]
+            else:
+                step_payloads = [
+                    (
+                        float(res.price[0]),
+                        float(res.price[1]),
+                        float(res.restricted_gap if np.isfinite(res.restricted_gap) else res.epsilon),
+                    )
+                ]
+            trial_rows = []
+            restricted_seq = []
+            grid_seq = []
+            for step_idx, (pE, pN, restricted_gap) in enumerate(step_payloads, start=1):
+                grid_gap = _nearest_grid_ne_gap(
+                    pE,
+                    pN,
+                    pE_grid=heatmap_pE_grid,
+                    pN_grid=heatmap_pN_grid,
+                    grid_ne_gap=heatmap_grid_ne_gap,
+                )
+                trial_rows.append(
+                    {
+                        "trial": int(trial),
+                        "iteration": int(step_idx),
+                        "pE": float(pE),
+                        "pN": float(pN),
+                        "restricted_gap": float(restricted_gap),
+                        "grid_ne_gap": float(grid_gap),
+                    }
+                )
+                restricted_seq.append(float(restricted_gap))
+                grid_seq.append(float(grid_gap))
+        else:
+            trial_rows, restricted_seq, grid_seq = _c1_trial_rows_from_result(
+                trial=trial,
+                users=users,
+                cfg=cfg,
+                result=res,
+            )
+        rows.extend(trial_rows)
+        restricted_sequences.append(restricted_seq)
+        grid_sequences.append(grid_seq)
+
+    _write_c1_outputs(
+        out_dir=out_dir,
+        rows=rows,
+        restricted_sequences=restricted_sequences,
+        grid_sequences=grid_sequences,
+        config_path=args.config,
+        seed=int(args.seed),
+        n_users=int(args.n_users),
+        trials=int(args.trials),
+        cfg=cfg,
+        grid_ne_gap_source=grid_source,
+        grid_ne_gap_source_path=grid_source_path,
+    )
+
+
+def main_C1_backfill_grid_ne_gap() -> None:
+    parser = argparse.ArgumentParser(description="Backfill grid-NE-gap trajectory into an existing C1 output directory.")
+    parser.add_argument("--run-dir", type=str, required=True)
+    parser.add_argument("--grid-ne-gap-csv", type=str, default=None)
+    args = parser.parse_args()
+
+    run_dir = Path(args.run_dir)
+    manifest = load_figure_manifest(run_dir / "figure_manifest.json")
+    config_raw = str(manifest.get("config", "")).strip()
+    if not config_raw:
+        raise ValueError("figure_manifest.json does not contain a config path.")
+    config_path = Path(config_raw)
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+    cfg = _load_cfg(str(config_path), n_users=int(manifest["n_users"]))
+    seed = int(manifest["seed"])
+    n_users = int(manifest["n_users"])
+    trials = int(manifest["n_trials"])
+    if args.grid_ne_gap_csv is not None:
+        csv_path = Path(args.grid_ne_gap_csv)
+        if not csv_path.is_absolute():
+            csv_path = ROOT / csv_path
+        heatmap_pE_grid, heatmap_pN_grid, heatmap_grid_ne_gap = _load_grid_ne_gap_surface(csv_path)
+        grid_source = "heatmap_csv_nearest"
+        grid_source_path = str(args.grid_ne_gap_csv)
+    else:
+        csv_path = None
+        heatmap_pE_grid = np.asarray([], dtype=float)
+        heatmap_pN_grid = np.asarray([], dtype=float)
+        heatmap_grid_ne_gap = np.asarray([[]], dtype=float)
+        grid_source = "audit_grid"
+        grid_source_path = None
+
+    existing_rows = load_csv_rows(run_dir / "C1_restricted_gap_trajectory.csv")
+    existing_by_trial: dict[int, list[dict[str, str]]] = {}
+    for row in existing_rows:
+        trial = int(row["trial"])
+        existing_by_trial.setdefault(trial, []).append(row)
+    for trial_rows in existing_by_trial.values():
+        trial_rows.sort(key=lambda row: int(row["iteration"]))
+
+    updated_rows: list[dict[str, object]] = []
+    restricted_sequences: list[list[float]] = []
+    grid_sequences: list[list[float]] = []
+
+    for trial in range(1, trials + 1):
+        if trial not in existing_by_trial:
+            raise ValueError(f"Missing saved restricted-gap rows for trial {trial}.")
+        restricted_saved = [float(row["restricted_gap"]) for row in existing_by_trial[trial]]
+        users = _sample_users(cfg, n_users, seed, trial)
+        result = solve_stage1_pricing(users, cfg.system, cfg.stackelberg)
+        if result.trajectory:
+            replay_restricted = [
+                float(step.restricted_gap if np.isfinite(step.restricted_gap) else step.epsilon)
+                for step in result.trajectory
+            ]
+            replay_prices = [(float(step.pE), float(step.pN)) for step in result.trajectory]
+        else:
+            replay_restricted = [float(result.restricted_gap if np.isfinite(result.restricted_gap) else result.epsilon)]
+            replay_prices = [(float(result.price[0]), float(result.price[1]))]
+        if len(replay_restricted) != len(restricted_saved):
+            raise ValueError(
+                f"Trial {trial}: saved restricted-gap length {len(restricted_saved)} "
+                f"does not match replayed trajectory length {len(replay_restricted)}."
+            )
+        for step_idx, (saved_val, replay_val) in enumerate(zip(restricted_saved, replay_restricted), start=1):
+            if abs(float(saved_val) - float(replay_val)) > 1e-9:
+                raise ValueError(
+                    f"Trial {trial}, iteration {step_idx}: saved restricted_gap={saved_val:.12g} "
+                    f"does not match replayed value {replay_val:.12g}."
+                )
+        if grid_source == "heatmap_csv_nearest":
+            trial_rows = []
+            restricted_seq = [float(value) for value in restricted_saved]
+            grid_seq = []
+            for step_idx, ((pE, pN), restricted_value) in enumerate(zip(replay_prices, restricted_saved), start=1):
+                grid_gap = _nearest_grid_ne_gap(
+                    pE,
+                    pN,
+                    pE_grid=heatmap_pE_grid,
+                    pN_grid=heatmap_pN_grid,
+                    grid_ne_gap=heatmap_grid_ne_gap,
+                )
+                trial_rows.append(
+                    {
+                        "trial": int(trial),
+                        "iteration": int(step_idx),
+                        "pE": float(pE),
+                        "pN": float(pN),
+                        "restricted_gap": float(restricted_value),
+                        "grid_ne_gap": float(grid_gap),
+                    }
+                )
+                grid_seq.append(float(grid_gap))
+        else:
+            trial_rows, restricted_seq, grid_seq = _c1_trial_rows_from_result(
+                trial=trial,
+                users=users,
+                cfg=cfg,
+                result=result,
+                restricted_override=restricted_saved,
+            )
+        updated_rows.extend(trial_rows)
+        restricted_sequences.append(restricted_seq)
+        grid_sequences.append(grid_seq)
+
+    _write_c1_outputs(
+        out_dir=run_dir,
+        rows=updated_rows,
+        restricted_sequences=restricted_sequences,
+        grid_sequences=grid_sequences,
+        config_path=config_raw,
+        seed=seed,
+        n_users=n_users,
+        trials=trials,
+        cfg=cfg,
+        replay_verified=True,
+        grid_ne_gap_source=grid_source,
+        grid_ne_gap_source_path=grid_source_path,
+    )
+
+
 def main_C2() -> None:
     parser = argparse.ArgumentParser(description="Figure C2: best-response gain trajectories.")
     parser.add_argument("--config", type=str, default="configs/figures/paper_base.toml")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--n-users", type=int, default=20)
     parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--c1-run-dir", type=str, default=None)
+    parser.add_argument("--c2-run-dir", type=str, default=None)
+    parser.add_argument("--grid-gain-csv", type=str, default=None)
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
 
+    if args.c2_run_dir:
+        _run_c2_replot_from_existing_run(Path(args.c2_run_dir))
+        return
+
     out_dir = resolve_out_dir("run_figure_C2_best_response_gain_trajectory", args.out_dir)
+    if args.c1_run_dir:
+        _run_c2_from_c1_run(Path(args.c1_run_dir), out_dir, grid_gain_csv=args.grid_gain_csv)
+        return
+
     cfg = _load_cfg(args.config, n_users=args.n_users)
+    if args.grid_gain_csv:
+        grid_gain_path = _resolve_existing_path(args.grid_gain_csv)
+        heatmap_pE_grid, heatmap_pN_grid, heatmap_esp_rev, heatmap_nsp_rev = _load_revenue_surfaces(grid_gain_path)
+    else:
+        grid_gain_path = None
+        heatmap_pE_grid = np.asarray([], dtype=float)
+        heatmap_pN_grid = np.asarray([], dtype=float)
+        heatmap_esp_rev = np.asarray([[]], dtype=float)
+        heatmap_nsp_rev = np.asarray([[]], dtype=float)
     seq_E: list[list[float]] = []
     seq_N: list[list[float]] = []
+    grid_seq_E: list[list[float]] = []
+    grid_seq_N: list[list[float]] = []
     rows: list[dict[str, object]] = []
     for trial in range(1, args.trials + 1):
         users = _sample_users(cfg, args.n_users, args.seed, trial)
         res = solve_stage1_pricing(users, cfg.system, cfg.stackelberg)
-        sE = [float(step.esp_gain if np.isfinite(step.esp_gain) else 0.0) for step in res.trajectory]
-        sN = [float(step.nsp_gain if np.isfinite(step.nsp_gain) else 0.0) for step in res.trajectory]
-        if not sE:
-            sE = [float(res.gain_E.gain)]
-        if not sN:
-            sN = [float(res.gain_N.gain)]
+        trial_rows, sE, sN, _, _ = _c2_trial_rows_from_result(trial=trial, result=res)
+        if grid_gain_path is not None:
+            trial_rows, grid_sE, grid_sN = _c2_attach_grid_true_gains(
+                trial_rows,
+                pE_grid=heatmap_pE_grid,
+                pN_grid=heatmap_pN_grid,
+                esp_revenue=heatmap_esp_rev,
+                nsp_revenue=heatmap_nsp_rev,
+            )
+            grid_seq_E.append(grid_sE)
+            grid_seq_N.append(grid_sN)
         seq_E.append(sE)
         seq_N.append(sN)
-        for step_idx, (gE, gN) in enumerate(zip(sE, sN), start=1):
-            rows.append({"trial": trial, "iteration": step_idx, "esp_gain": gE, "nsp_gain": gN})
-    mean_E, std_E = _aligned_series(seq_E)
-    mean_N, std_N = _aligned_series(seq_N)
-    write_csv_rows(out_dir / "C2_best_response_gain_trajectory.csv", ["trial", "iteration", "esp_gain", "nsp_gain"], rows)
-    fig, ax = plt.subplots(figsize=(8.2, 5.2), dpi=150)
-    x = np.arange(1, mean_E.size + 1)
-    ax.plot(x, mean_E, marker="o", linewidth=1.8, label="ESP gain")
-    ax.fill_between(x, mean_E - std_E, mean_E + std_E, alpha=0.18)
-    ax.plot(x, mean_N, marker="s", linewidth=1.8, label="NSP gain")
-    ax.fill_between(x, mean_N - std_N, mean_N + std_N, alpha=0.18)
-    ax.set_xlabel("Stage I iteration")
-    ax.set_ylabel("Best-response gain")
-    ax.set_title("Best-response gain trajectories")
-    ax.grid(alpha=0.25)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_dir / "C2_best_response_gain_trajectory.png")
-    plt.close(fig)
-    _write_summary(out_dir / "C2_best_response_gain_trajectory_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"n_users = {args.n_users}", f"trials = {args.trials}"])
+        rows.extend(trial_rows)
+    _write_c2_outputs(
+        out_dir=out_dir,
+        rows=rows,
+        seq_E=seq_E,
+        seq_N=seq_N,
+        config_path=args.config,
+        seed=args.seed,
+        n_users=args.n_users,
+        trials=args.trials,
+        grid_seq_E=(grid_seq_E if grid_gain_path is not None else None),
+        grid_seq_N=(grid_seq_N if grid_gain_path is not None else None),
+        grid_gain_source_path=(str(grid_gain_path) if grid_gain_path is not None else None),
+    )
 
 
 def main_C4() -> None:
@@ -669,24 +1617,31 @@ def main_D2() -> None:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--n-users-list", type=str, default="8,12,16,20,40,60,80,100")
     parser.add_argument("--trials", type=int, default=10)
+    parser.add_argument("--methods", type=str, default="VBBR,GA,BO,MARL")
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
     out_dir = resolve_out_dir("run_figure_D2_stage1_runtime_vs_users", args.out_dir)
     cfg = _load_cfg(args.config)
     rows: list[dict[str, object]] = []
-    methods = ["Proposed", "GA", "BO", "MARL", "GSO"]
+    methods = [str(x).strip() for x in args.methods.split(",") if str(x).strip()]
     for n in [int(x) for x in args.n_users_list.split(",") if x.strip()]:
         for trial in range(1, args.trials + 1):
             users = _sample_users(cfg, n, args.seed, trial)
             for method in methods:
-                if method == "GSO" and n > 16:
+                if method.upper() == "GSO" and n > 16:
                     continue
-                internal_method = method if method != "MARL" else "MARL"
+                method_key = method.strip().lower()
+                if method_key in {"proposed", "vbbr"}:
+                    internal_method = "Proposed"
+                elif method_key == "marl":
+                    internal_method = "MARL"
+                else:
+                    internal_method = method
                 price, offloading_set, gap, _, _, meta = _run_stage1_method(users, cfg.system, cfg.stackelberg, cfg.baselines, internal_method)
                 rows.append({"method": method, "n_users": n, "trial": trial, "runtime_sec": float(meta["runtime_sec"]), "restricted_gap": float(gap), "offloading_size": int(len(offloading_set)), "final_pE": float(price[0]), "final_pN": float(price[1])})
     write_csv_rows(out_dir / "D2_stage1_runtime_vs_users.csv", ["method", "n_users", "trial", "runtime_sec", "restricted_gap", "offloading_size", "final_pE", "final_pN"], rows)
     _plot_method_errorbars(rows, x_key="n_users", y_key="runtime_sec", xlabel="Number of users", ylabel="Runtime (sec)", title="Stage I runtime versus users", out_path=out_dir / "D2_stage1_runtime_vs_users.png", method_order=methods)
-    _write_summary(out_dir / "D2_stage1_runtime_vs_users_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"trials = {args.trials}", f"n_users_list = {args.n_users_list}"])
+    _write_summary(out_dir / "D2_stage1_runtime_vs_users_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"trials = {args.trials}", f"n_users_list = {args.n_users_list}", f"methods = {','.join(methods)}"])
 
 
 def main_D3() -> None:

@@ -159,12 +159,12 @@ def main() -> None:
     parser.add_argument(
         "--force-enum",
         action="store_true",
-        help="No-op compatibility flag; centralized solver is already exhaustive enumeration.",
+        help="Force exhaustive enumeration for the centralized reference solver.",
     )
     parser.add_argument(
         "--centralized-solver",
         type=str,
-        default="enum",
+        default="pyomo_scip",
         choices=["enum", "gekko", "pyomo_scip", "skip"],
         help="Centralized reference solver used for the horizontal line.",
     )

@@ -482,11 +482,12 @@ def _solve_with_pyomo_scip(
     try:
         results = solver.solve(m, tee=False)
         tc = results.solver.termination_condition
+        message = str(getattr(results.solver, "message", "") or "").lower()
         solved = tc in {
             TerminationCondition.optimal,
             TerminationCondition.locallyOptimal,
             TerminationCondition.feasible,
-        }
+        } or ("gap limit reached" in message)
     except Exception:
         solved = False
 
@@ -835,8 +836,20 @@ def baseline_stage2_centralized_solver(
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
     """
-    Solve Stage II using exhaustive enumeration over all user sets.
+    Solve Stage II using the default centralized oracle.
+
+    By default this prefers the Pyomo+SCIP MINLP solve. If that fails and exact
+    fallback is enabled for a sufficiently small instance, it falls back to
+    exhaustive enumeration.
     """
+    if bool(base_cfg.cs_use_minlp):
+        out = _solve_centralized_pyomo_scip(users, pE, pN, system, stack_cfg, base_cfg)
+        if bool(out.meta.get("success")):
+            return out
+        if bool(base_cfg.cs_fallback_to_enum) and users.n <= int(base_cfg.exact_max_users):
+            return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
+        return out
+
     return _solve_centralized_enumeration(users, pE, pN, system, stack_cfg, base_cfg)
 
 
@@ -1514,8 +1527,8 @@ def _solve_bilevel_stage2_oracle(
 ) -> BaselineOutcome:
     """Lower-level oracle for bilevel-MINLP leader search.
 
-    Search-time oracle prefers the explicit centralized MINLP follower solve and
-    only falls back to exact enumeration when the MINLP solve is unsuccessful
+    Search-time oracle uses the default centralized Stage-II solver, which
+    prefers Pyomo+SCIP and only falls back to exact enumeration when enabled
     and the instance is still small enough for the exact oracle.
     """
 
@@ -1523,10 +1536,7 @@ def _solve_bilevel_stage2_oracle(
     if key in stage2_cache:
         return stage2_cache[key]
 
-    out = _solve_centralized_minlp(users, pE, pN, system, stack_cfg, base_cfg)
-    success = bool(out.meta.get("success"))
-    if (not success) and bool(base_cfg.cs_fallback_to_enum) and users.n <= int(base_cfg.exact_max_users):
-        out = baseline_stage2_centralized_solver(users, pE, pN, system, stack_cfg, base_cfg)
+    out = baseline_stage2_centralized_solver(users, pE, pN, system, stack_cfg, base_cfg)
     stage2_cache[key] = out
     return out
 

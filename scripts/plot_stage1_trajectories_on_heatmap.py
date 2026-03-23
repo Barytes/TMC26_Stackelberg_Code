@@ -445,6 +445,7 @@ def _plot_compare(
 
     legend_labels = {
         "VBBR": "proposed iterative-pricing",
+        "paper_iterative_pricing": "proposed iterative-pricing",
         "BO": "BO",
         "BO-ONLINE": "BO-online",
         "GA": "GA",
@@ -453,13 +454,18 @@ def _plot_compare(
     }
     styles = {
         "VBBR": {"color": "cyan", "linestyle": "-", "linewidth": 1.8},
+        "paper_iterative_pricing": {"color": "cyan", "linestyle": "-", "linewidth": 1.8},
         "BO": {"color": "gold", "linestyle": "--", "linewidth": 1.5},
         "BO-ONLINE": {"color": "deepskyblue", "linestyle": ":", "linewidth": 1.7},
         "GA": {"color": "orangered", "linestyle": "-", "linewidth": 1.6},
         "EPEC-DIAG": {"color": "white", "linestyle": "-", "linewidth": 1.6},
         "MARL": {"color": "lime", "linestyle": "-.", "linewidth": 1.5},
     }
-    for name in ["VBBR", "BO", "BO-ONLINE", "GA", "EPEC-DIAG", "MARL"]:
+    preferred_order = ["VBBR", "paper_iterative_pricing", "BO", "BO-ONLINE", "GA", "EPEC-DIAG", "MARL"]
+    ordered_names = [name for name in preferred_order if name in trajectories]
+    ordered_names.extend(name for name in trajectories if name not in ordered_names)
+    fallback_colors = plt.get_cmap("tab10")
+    for idx, name in enumerate(ordered_names):
         if name not in trajectories:
             continue
         traj = trajectories[name]
@@ -467,7 +473,17 @@ def _plot_compare(
             continue
         pE = np.asarray([pt[0] for pt in traj], dtype=float)
         pN = np.asarray([pt[1] for pt in traj], dtype=float)
-        style = styles[name]
+        normalized_name = name
+        if name.startswith("paper_iterative_pricing"):
+            normalized_name = "paper_iterative_pricing"
+        style = styles.get(
+            normalized_name,
+            {
+                "color": fallback_colors(idx % 10),
+                "linestyle": "-",
+                "linewidth": 1.6,
+            },
+        )
         ax.plot(
             pE,
             pN,
@@ -475,7 +491,7 @@ def _plot_compare(
             linestyle=style["linestyle"],
             linewidth=style["linewidth"],
             alpha=0.95,
-            label=f"{legend_labels[name]} path",
+            label=f"{legend_labels.get(normalized_name, name)} path",
         )
         ax.scatter([pE[0]], [pN[0]], c=style["color"], s=50, marker="o", edgecolors="black", linewidths=0.5)
         ax.scatter([pE[-1]], [pN[-1]], c=style["color"], s=70, marker="X", edgecolors="black", linewidths=0.5)

@@ -1,0 +1,28 @@
+[run]
+figure_id = C1
+block = C
+script = run_figure_C1_restricted_gap_trajectory.py
+output_dir = outputs\run_figure_C1_restricted_gap_trajectory_20260323_151430
+
+[artifacts]
+primary_image = C1_restricted_gap_trajectory.png
+primary_csv = C1_restricted_gap_trajectory.csv
+summary_file = C1_restricted_gap_trajectory_summary.txt
+
+[inputs]
+config = configs\_tmp_default_paper_iterative_pricing.toml
+seed = 2026
+n_users = 100
+n_trials = 10
+
+[primary_metrics]
+center_statistic = median
+band_statistic = q25_q75
+stopping_tolerance = 1e-07
+grid_ne_gap_source = heatmap_csv_nearest
+grid_ne_gap_heatmap_csv = outputs\stage1\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
+grid_ne_gap_definition = precomputed grid_ne_gap surface value at the nearest heatmap grid point to each trajectory price
+trajectory_replay_verified = true
+
+[runtime]
+runtime_sec = 

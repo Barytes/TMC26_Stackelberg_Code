@@ -174,6 +174,8 @@ def _default_plot_filename(transform: str) -> str:
         return "approx_ratio_scatter_normalized.png"
     if transform == "margin":
         return "approx_ratio_scatter_margin.png"
+    if transform == "margin_logfit":
+        return "approx_ratio_scatter_margin_logfit.png"
     raise ValueError(f"Unknown transform={transform}")
 
 
@@ -183,8 +185,30 @@ def _violation_rate_str(num_violations: int, num_valid: int) -> str:
     return f"{(100.0 * num_violations / num_valid):.4f}%"
 
 
-def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Path, transform: str = "linear") -> dict[str, int]:
-    if transform not in {"linear", "logy", "loglog", "normalized", "margin"}:
+def _format_poly_equation(coeffs: np.ndarray) -> str:
+    degree = len(coeffs) - 1
+    terms: list[str] = []
+    for idx, coeff in enumerate(coeffs):
+        power = degree - idx
+        coeff_str = f"{float(coeff):.6g}"
+        if power == 0:
+            terms.append(f"{coeff_str}")
+        elif power == 1:
+            terms.append(f"{coeff_str} x")
+        else:
+            terms.append(f"{coeff_str} x^{power}")
+    return "y = " + " + ".join(terms)
+
+
+def _plot_scatter(
+    rows: list[dict[str, float | int | str | bool]],
+    out_path: Path,
+    transform: str = "linear",
+    *,
+    fit_curve: bool = False,
+    fit_degree: int = 2,
+) -> dict[str, int | str]:
+    if transform not in {"linear", "logy", "loglog", "normalized", "margin", "margin_logfit"}:
         raise ValueError(f"Unknown transform={transform}")
 
     valid_rows = [
@@ -195,7 +219,7 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         and np.isfinite(float(r["ratio"]))
     ]
     dropped_for_log = 0
-    if transform in {"logy", "loglog", "normalized", "margin"}:
+    if transform in {"logy", "loglog", "normalized", "margin", "margin_logfit"}:
         filtered: list[dict[str, float | int | str | bool]] = []
         for r in valid_rows:
             if float(r["bound"]) > 0.0 and float(r["ratio"]) > 0.0:
@@ -226,7 +250,7 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         elif transform == "normalized":
             x_plot = bounds_raw
             y_plot = ratios_raw / bounds_raw
-        else:  # margin
+        else:  # margin / margin_logfit
             x_plot = bounds_raw
             y_plot = np.log(bounds_raw / ratios_raw)
         color = cmap(idx % 10)
@@ -248,7 +272,7 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         elif transform == "normalized":
             x_v = x_v_raw
             y_v = y_v_raw / x_v_raw
-        else:  # margin
+        else:  # margin / margin_logfit
             x_v = x_v_raw
             y_v = np.log(x_v_raw / y_v_raw)
         ax.scatter(x_v, y_v, s=58, marker="x", color="red", linewidths=1.1, label="Violation (ratio > bound)")
@@ -276,11 +300,11 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
             y_all = y_all_raw / x_all_raw
             line_y = lambda x: np.ones_like(x)
             line_label = "y = 1"
-        else:  # margin
+        else:  # margin / margin_logfit
             x_all = x_all_raw
             y_all = np.log(x_all_raw / y_all_raw)
             line_y = lambda x: np.zeros_like(x)
-            line_label = "y = 0"
+            line_label = None
 
         x_low = float(np.min(x_all))
         x_high = float(np.max(x_all))
@@ -295,14 +319,33 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
         if transform == "normalized":
             y_low = min(y_low, 1.0)
             y_high = max(y_high, 1.0)
-        if transform == "margin":
+        if transform in {"margin", "margin_logfit"}:
             y_low = min(y_low, 0.0)
             y_high = max(y_high, 0.0)
         xs = np.linspace(x_low, x_high, 300)
         ys = line_y(xs)
-        ax.plot(xs, ys, linestyle="--", color="black", linewidth=1.3, label=line_label)
+        ref_label = "_nolegend_" if line_label is None else line_label
+        ax.plot(xs, ys, linestyle="--", color="black", linewidth=1.3, label=ref_label)
         ax.set_xlim(x_low, x_high)
         ax.set_ylim(y_low, y_high)
+        fit_equation = ""
+        if (fit_curve or transform == "margin_logfit") and x_all.size >= 2:
+            fit_deg = max(1, min(int(fit_degree), int(x_all.size) - 1))
+            if transform == "margin_logfit":
+                x_fit = np.log(x_all)
+                if np.unique(x_fit).size > 1:
+                    coeffs = np.polyfit(x_fit, y_all, deg=1)
+                    b = float(coeffs[0])
+                    a = float(coeffs[1])
+                    ax.plot(xs, a + b * np.log(xs), color="tab:brown", linewidth=1.8, label="Log fit")
+                    fit_equation = f"s(B) = {a:.6g} + {b:.6g} ln B"
+            elif np.unique(x_all).size > fit_deg:
+                coeffs = np.polyfit(x_all, y_all, deg=fit_deg)
+                poly = np.poly1d(coeffs)
+                ax.plot(xs, poly(xs), color="tab:brown", linewidth=1.8, label=f"Polynomial fit (deg={fit_deg})")
+                fit_equation = _format_poly_equation(coeffs)
+    else:
+        fit_equation = ""
 
     if transform == "linear":
         ax.set_xlabel("Theoretical Upper Bound (RHS)")
@@ -323,13 +366,16 @@ def _plot_scatter(rows: list[dict[str, float | int | str | bool]], out_path: Pat
             ax.set_title("Empirical/Theoretical Ratio Normalization (Stage II)")
         else:
             ax.set_ylabel("Margin log(RHS / Empirical Ratio)")
-            ax.set_title("Bound Margin log(bound/ratio) (Stage II)")
+            if transform == "margin_logfit":
+                ax.set_title("Bound Margin log(bound/ratio) with Log Fit (Stage II)")
+            else:
+                ax.set_title("Bound Margin log(bound/ratio) (Stage II)")
     ax.grid(alpha=0.25)
     ax.legend(loc="upper right", fontsize=9)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
-    return {"valid_rows_used": len(valid_rows), "dropped_for_log": dropped_for_log}
+    return {"valid_rows_used": len(valid_rows), "dropped_for_log": dropped_for_log, "fit_equation": fit_equation}
 
 
 def main() -> None:
@@ -357,7 +403,7 @@ def main() -> None:
     parser.add_argument(
         "--centralized-solver",
         type=str,
-        default="gekko",
+        default="pyomo_scip",
         choices=["gekko", "enum", "pyomo_scip"],
         help="Centralized solver used as X* proxy.",
     )
@@ -371,7 +417,7 @@ def main() -> None:
         "--plot-transform",
         type=str,
         default="linear",
-        choices=["linear", "logy", "loglog", "normalized", "margin"],
+        choices=["linear", "logy", "loglog", "normalized", "margin", "margin_logfit"],
         help="Scatter plot transform mode.",
     )
     parser.add_argument(
@@ -485,7 +531,7 @@ def main() -> None:
             )
 
     csv_path = out_dir / "approx_ratio_points.csv"
-    fig_path = out_dir / "approx_ratio_scatter.png"
+    fig_path = out_dir / plot_name
     summary_path = out_dir / "approx_ratio_summary.txt"
 
     _write_points_csv(csv_path, rows)
@@ -513,6 +559,7 @@ def main() -> None:
         f"valid_instances = {valid_count}",
         f"plot_valid_instances = {plot_info['valid_rows_used']}",
         f"plot_dropped_for_log = {plot_info['dropped_for_log']}",
+        f"fit_equation = {plot_info['fit_equation']}",
         f"violations = {violation_count}",
         f"overall_violation_rate = {_violation_rate_str(violation_count, valid_count)}",
     ]
