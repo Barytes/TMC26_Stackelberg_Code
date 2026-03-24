@@ -1,0 +1,17 @@
+config = configs\default.toml
+n_users = 50
+seed = 2026
+trials = 20
+solver_variant = vbbr_brd
+scan_mode = fixed_cE_scan_cN
+fixed_cE = 0.01
+base_cN = 0.01
+base_ratio = 1
+ratio_list = 0.001,0.003,0.01,0.03,0.1,0.3,1,3,10,30,100,300,1000
+xscale = log
+same_user_realization_across_ratios_within_trial = true
+rows = 260
+runtime_sec = 280.7806371
+min_mean_social_cost_ratio = 0.03
+max_mean_joint_revenue_ratio = 1000
+max_mean_offloading_ratio_ratio = 0.01
