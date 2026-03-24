@@ -1,0 +1,7 @@
+source_csv = outputs\e2_trial10_default\E2_provider_revenue_compare.csv
+rows = 250
+methods = Coop,Full model,ME,Rand,SingleSP
+n_users = 20,40,60,80,100
+config = configs\default.toml
+system_F = 100.0
+system_B = 40.0

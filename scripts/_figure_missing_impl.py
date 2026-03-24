@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 from dataclasses import replace
 import math
@@ -44,6 +45,7 @@ from tmc26_exp.baselines import (
     baseline_random_offloading,
     baseline_single_sp,
     baseline_stage1_bo,
+    baseline_stage1_bo_online_grid_ne_gap,
     baseline_stage1_ga,
     baseline_stage1_grid_search_oracle,
     baseline_stage1_marl,
@@ -941,6 +943,8 @@ def _run_stage1_method(users, system, stack_cfg, base_cfg, method: str) -> tuple
         out = baseline_stage1_ga(users, system, stack_cfg, base_cfg)
     elif method_key == "bo":
         out = baseline_stage1_bo(users, system, stack_cfg, base_cfg)
+    elif method_key in {"bo-online", "bo_online"}:
+        out = baseline_stage1_bo_online_grid_ne_gap(users, system, stack_cfg, base_cfg)
     elif method_key == "marl":
         out = baseline_stage1_marl(users, system, stack_cfg, base_cfg)
     elif method_key == "me":
@@ -968,6 +972,78 @@ def _run_stage1_method(users, system, stack_cfg, base_cfg, method: str) -> tuple
             "offloading_size": int(len(out.offloading_set)),
         },
     )
+
+
+def _normalize_stage1_runtime_method(method: str) -> str:
+    method_key = method.strip().lower()
+    if method_key in {"proposed", "vbbr"}:
+        return "Proposed"
+    if method_key == "marl":
+        return "MARL"
+    return method
+
+
+def _apply_d2_baseline_caps(
+    base_cfg,
+    *,
+    bo_iters: int | None,
+    ga_generations: int | None,
+    marl_episodes: int | None,
+    marl_steps_per_episode: int | None,
+):
+    updates: dict[str, int] = {}
+    if bo_iters is not None:
+        updates["bo_iters"] = max(0, int(bo_iters))
+    if ga_generations is not None:
+        updates["ga_generations"] = max(0, int(ga_generations))
+    if marl_episodes is not None:
+        updates["marl_episodes"] = max(1, int(marl_episodes))
+    if marl_steps_per_episode is not None:
+        updates["marl_steps_per_episode"] = max(1, int(marl_steps_per_episode))
+    return replace(base_cfg, **updates) if updates else base_cfg
+
+
+def _run_d2_point(
+    config_path: str,
+    seed: int,
+    n_users: int,
+    trial: int,
+    method: str,
+    bo_iters: int | None = None,
+    ga_generations: int | None = None,
+    marl_episodes: int | None = None,
+    marl_steps_per_episode: int | None = None,
+) -> dict[str, object]:
+    cfg = _load_cfg(config_path)
+    row_method = str(method)
+    users = _sample_users(cfg, int(n_users), int(seed), int(trial))
+    normalized_method = _normalize_stage1_runtime_method(row_method)
+    base_cfg = cfg.baselines
+    if normalized_method != "Proposed":
+        base_cfg = _apply_d2_baseline_caps(
+            base_cfg,
+            bo_iters=bo_iters,
+            ga_generations=ga_generations,
+            marl_episodes=marl_episodes,
+            marl_steps_per_episode=marl_steps_per_episode,
+        )
+    price, offloading_set, gap, _, _, meta = _run_stage1_method(
+        users,
+        cfg.system,
+        cfg.stackelberg,
+        base_cfg,
+        normalized_method,
+    )
+    return {
+        "method": row_method,
+        "n_users": int(n_users),
+        "trial": int(trial),
+        "runtime_sec": float(meta["runtime_sec"]),
+        "restricted_gap": float(gap),
+        "offloading_size": int(len(offloading_set)),
+        "final_pE": float(price[0]),
+        "final_pN": float(price[1]),
+    }
 
 
 def _budgeted_cfg(stack_cfg, base_cfg, method: str, budget: int):
@@ -1618,30 +1694,121 @@ def main_D2() -> None:
     parser.add_argument("--n-users-list", type=str, default="8,12,16,20,40,60,80,100")
     parser.add_argument("--trials", type=int, default=10)
     parser.add_argument("--methods", type=str, default="VBBR,GA,BO,MARL")
+    parser.add_argument("--baseline-bo-iters", type=int, default=None)
+    parser.add_argument("--baseline-ga-generations", type=int, default=None)
+    parser.add_argument("--baseline-marl-episodes", type=int, default=None)
+    parser.add_argument("--baseline-marl-steps-per-episode", type=int, default=None)
+    parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
     out_dir = resolve_out_dir("run_figure_D2_stage1_runtime_vs_users", args.out_dir)
-    cfg = _load_cfg(args.config)
-    rows: list[dict[str, object]] = []
     methods = [str(x).strip() for x in args.methods.split(",") if str(x).strip()]
-    for n in [int(x) for x in args.n_users_list.split(",") if x.strip()]:
+    n_list = [int(x) for x in args.n_users_list.split(",") if x.strip()]
+    csv_path = out_dir / "D2_stage1_runtime_vs_users.csv"
+    rows: list[dict[str, object]] = list(load_csv_rows(csv_path)) if csv_path.exists() else []
+    completed_points = {
+        (str(row["method"]), int(row["n_users"]), int(row["trial"]))
+        for row in rows
+    }
+    total_points = sum(1 for n in n_list for method in methods if not (method.upper() == "GSO" and n > 16)) * int(args.trials)
+    method_order_idx = {method: idx for idx, method in enumerate(methods)}
+
+    def _flush_d2_progress(*, completed: bool) -> None:
+        ordered_rows = sorted(
+            rows,
+            key=lambda row: (
+                int(row["n_users"]),
+                int(row["trial"]),
+                method_order_idx.get(str(row["method"]), len(method_order_idx)),
+                str(row["method"]),
+            ),
+        )
+        write_csv_rows(
+            csv_path,
+            ["method", "n_users", "trial", "runtime_sec", "restricted_gap", "offloading_size", "final_pE", "final_pN"],
+            ordered_rows,
+        )
+        if ordered_rows:
+            _plot_method_errorbars(
+                ordered_rows,
+                x_key="n_users",
+                y_key="runtime_sec",
+                xlabel="Number of users",
+                ylabel="Runtime (sec)",
+                title="Stage I runtime versus users",
+                out_path=out_dir / "D2_stage1_runtime_vs_users.png",
+                method_order=methods,
+            )
+        _write_summary(
+            out_dir / "D2_stage1_runtime_vs_users_summary.txt",
+            [
+                f"config = {args.config}",
+                f"seed = {args.seed}",
+                f"trials = {args.trials}",
+                f"n_users_list = {args.n_users_list}",
+                f"methods = {','.join(methods)}",
+                f"baseline_bo_iters = {'' if args.baseline_bo_iters is None else int(args.baseline_bo_iters)}",
+                f"baseline_ga_generations = {'' if args.baseline_ga_generations is None else int(args.baseline_ga_generations)}",
+                f"baseline_marl_episodes = {'' if args.baseline_marl_episodes is None else int(args.baseline_marl_episodes)}",
+                f"baseline_marl_steps_per_episode = {'' if args.baseline_marl_steps_per_episode is None else int(args.baseline_marl_steps_per_episode)}",
+                f"progress_completed_points = {len(completed_points)}",
+                f"progress_total_points = {total_points}",
+                f"progress_complete = {'true' if completed else 'false'}",
+            ],
+        )
+
+    _flush_d2_progress(completed=(len(completed_points) >= total_points and total_points > 0))
+
+    pending_points: list[tuple[int, int, str]] = []
+    for n in n_list:
         for trial in range(1, args.trials + 1):
-            users = _sample_users(cfg, n, args.seed, trial)
             for method in methods:
                 if method.upper() == "GSO" and n > 16:
                     continue
-                method_key = method.strip().lower()
-                if method_key in {"proposed", "vbbr"}:
-                    internal_method = "Proposed"
-                elif method_key == "marl":
-                    internal_method = "MARL"
-                else:
-                    internal_method = method
-                price, offloading_set, gap, _, _, meta = _run_stage1_method(users, cfg.system, cfg.stackelberg, cfg.baselines, internal_method)
-                rows.append({"method": method, "n_users": n, "trial": trial, "runtime_sec": float(meta["runtime_sec"]), "restricted_gap": float(gap), "offloading_size": int(len(offloading_set)), "final_pE": float(price[0]), "final_pN": float(price[1])})
-    write_csv_rows(out_dir / "D2_stage1_runtime_vs_users.csv", ["method", "n_users", "trial", "runtime_sec", "restricted_gap", "offloading_size", "final_pE", "final_pN"], rows)
-    _plot_method_errorbars(rows, x_key="n_users", y_key="runtime_sec", xlabel="Number of users", ylabel="Runtime (sec)", title="Stage I runtime versus users", out_path=out_dir / "D2_stage1_runtime_vs_users.png", method_order=methods)
-    _write_summary(out_dir / "D2_stage1_runtime_vs_users_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"trials = {args.trials}", f"n_users_list = {args.n_users_list}", f"methods = {','.join(methods)}"])
+                point_key = (method, int(n), int(trial))
+                if point_key not in completed_points:
+                    pending_points.append((int(n), int(trial), method))
+
+    if int(args.jobs) <= 1:
+        for n, trial, method in pending_points:
+            rows.append(
+                _run_d2_point(
+                    str(args.config),
+                    int(args.seed),
+                    int(n),
+                    int(trial),
+                    method,
+                    bo_iters=args.baseline_bo_iters,
+                    ga_generations=args.baseline_ga_generations,
+                    marl_episodes=args.baseline_marl_episodes,
+                    marl_steps_per_episode=args.baseline_marl_steps_per_episode,
+                )
+            )
+            completed_points.add((str(method), int(n), int(trial)))
+            _flush_d2_progress(completed=False)
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=int(args.jobs)) as ex:
+            future_to_point = {
+                ex.submit(
+                    _run_d2_point,
+                    str(args.config),
+                    int(args.seed),
+                    int(n),
+                    int(trial),
+                    method,
+                    args.baseline_bo_iters,
+                    args.baseline_ga_generations,
+                    args.baseline_marl_episodes,
+                    args.baseline_marl_steps_per_episode,
+                ): (n, trial, method)
+                for n, trial, method in pending_points
+            }
+            for future in concurrent.futures.as_completed(future_to_point):
+                n, trial, method = future_to_point[future]
+                rows.append(future.result())
+                completed_points.add((str(method), int(n), int(trial)))
+                _flush_d2_progress(completed=False)
+    _flush_d2_progress(completed=True)
 
 
 def main_D3() -> None:
@@ -1750,6 +1917,86 @@ def _collect_strategic_rows(cfg: ExperimentConfig, n_list: list[int], trials: in
     return rows
 
 
+_STRATEGIC_FIELDNAMES = [
+    "method",
+    "n_users",
+    "trial",
+    "social_cost",
+    "esp_revenue",
+    "nsp_revenue",
+    "joint_revenue",
+    "comp_utilization",
+    "band_utilization",
+    "final_pE",
+    "final_pN",
+    "offloading_size",
+    "restricted_gap",
+]
+
+
+def _strategic_rows_from_csv(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for row in load_csv_rows(path):
+        rows.append(
+            {
+                "method": str(row["method"]),
+                "n_users": int(row["n_users"]),
+                "trial": int(row["trial"]),
+                "social_cost": float(row["social_cost"]),
+                "esp_revenue": float(row["esp_revenue"]),
+                "nsp_revenue": float(row["nsp_revenue"]),
+                "joint_revenue": float(row["joint_revenue"]),
+                "comp_utilization": float(row["comp_utilization"]),
+                "band_utilization": float(row["band_utilization"]),
+                "final_pE": float(row["final_pE"]),
+                "final_pN": float(row["final_pN"]),
+                "offloading_size": float(row["offloading_size"]),
+                "restricted_gap": float(row["restricted_gap"]),
+            }
+        )
+    return rows
+
+
+def _flush_E2_progress(
+    *,
+    out_dir: Path,
+    rows: list[dict[str, object]],
+    config_path: str,
+    seed: int,
+    n_users_list: list[int],
+    trials: int,
+    completed_points: int,
+    total_points: int,
+) -> None:
+    csv_path = out_dir / "E2_provider_revenue_compare.csv"
+    png_path = out_dir / "E2_provider_revenue_compare.png"
+    summary_path = out_dir / "E2_provider_revenue_compare_summary.txt"
+    write_csv_rows(csv_path, list(_STRATEGIC_FIELDNAMES), rows)
+    _plot_three_panel(
+        rows,
+        x_key="n_users",
+        panels=[("esp_revenue", "ESP revenue"), ("nsp_revenue", "NSP revenue"), ("joint_revenue", "Joint revenue")],
+        xlabel="Number of users",
+        title="Strategic-setting comparison: provider revenues",
+        out_path=png_path,
+        method_order=["Full model", "ME", "SingleSP", "Coop", "Rand"],
+    )
+    _write_summary(
+        summary_path,
+        [
+            f"config = {config_path}",
+            f"seed = {seed}",
+            f"trials = {trials}",
+            f"n_users_list = {','.join(str(int(x)) for x in n_users_list)}",
+            f"progress_completed_points = {completed_points}",
+            f"progress_total_points = {total_points}",
+            f"progress_status = {'completed' if completed_points >= total_points else 'running'}",
+        ],
+    )
+
+
 def main_E1() -> None:
     parser = argparse.ArgumentParser(description="Figure E1: user social cost comparison.")
     parser.add_argument("--config", type=str, default="configs/figures/paper_base.toml")
@@ -1776,18 +2023,63 @@ def main_E2() -> None:
     args = parser.parse_args()
     out_dir = resolve_out_dir("run_figure_E2_provider_revenue_compare", args.out_dir)
     cfg = _load_cfg(args.config)
-    rows = _collect_strategic_rows(cfg, [int(x) for x in args.n_users_list.split(",") if x.strip()], args.trials, args.seed)
-    write_csv_rows(out_dir / "E2_provider_revenue_compare.csv", ["method", "n_users", "trial", "social_cost", "esp_revenue", "nsp_revenue", "joint_revenue", "comp_utilization", "band_utilization", "final_pE", "final_pN", "offloading_size", "restricted_gap"], rows)
-    _plot_three_panel(
-        rows,
-        x_key="n_users",
-        panels=[("esp_revenue", "ESP revenue"), ("nsp_revenue", "NSP revenue"), ("joint_revenue", "Joint revenue")],
-        xlabel="Number of users",
-        title="Strategic-setting comparison: provider revenues",
-        out_path=out_dir / "E2_provider_revenue_compare.png",
-        method_order=["Full model", "ME", "SingleSP", "Coop", "Rand"],
-    )
-    _write_summary(out_dir / "E2_provider_revenue_compare_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"trials = {args.trials}", f"n_users_list = {args.n_users_list}"])
+    n_list = [int(x) for x in args.n_users_list.split(",") if x.strip()]
+    methods = ["Full model", "ME", "SingleSP", "Coop", "Rand"]
+    csv_path = out_dir / "E2_provider_revenue_compare.csv"
+    rows = _strategic_rows_from_csv(csv_path)
+    completed = {(str(row["method"]), int(row["n_users"]), int(row["trial"])) for row in rows}
+    total_points = len(n_list) * int(args.trials) * len(methods)
+
+    if rows:
+        _flush_E2_progress(
+            out_dir=out_dir,
+            rows=rows,
+            config_path=args.config,
+            seed=args.seed,
+            n_users_list=n_list,
+            trials=args.trials,
+            completed_points=len(completed),
+            total_points=total_points,
+        )
+
+    for n in n_list:
+        for trial in range(1, args.trials + 1):
+            users = _sample_users(cfg, n, args.seed, trial)
+            for method in methods:
+                key = (method, int(n), int(trial))
+                if key in completed:
+                    continue
+                internal = {"Full model": "Proposed", "ME": "ME", "SingleSP": "SingleSP", "Coop": "Coop", "Rand": "Rand"}[method]
+                price, offloading_set, gap, esp_rev, nsp_rev, meta = _run_stage1_method(users, cfg.system, cfg.stackelberg, cfg.baselines, internal)
+                stage2 = solve_stage2_scm(users, price[0], price[1], cfg.system, cfg.stackelberg, inner_solver_mode="primal_dual")
+                rows.append(
+                    {
+                        "method": method,
+                        "n_users": int(n),
+                        "trial": int(trial),
+                        "social_cost": float(meta["social_cost"]),
+                        "esp_revenue": float(esp_rev),
+                        "nsp_revenue": float(nsp_rev),
+                        "joint_revenue": float(esp_rev + nsp_rev),
+                        "comp_utilization": float(np.sum(stage2.inner_result.f) / cfg.system.F),
+                        "band_utilization": float(np.sum(stage2.inner_result.b) / cfg.system.B),
+                        "final_pE": float(price[0]),
+                        "final_pN": float(price[1]),
+                        "offloading_size": int(len(offloading_set)),
+                        "restricted_gap": float(gap),
+                    }
+                )
+                completed.add(key)
+                _flush_E2_progress(
+                    out_dir=out_dir,
+                    rows=rows,
+                    config_path=args.config,
+                    seed=args.seed,
+                    n_users_list=n_list,
+                    trials=args.trials,
+                    completed_points=len(completed),
+                    total_points=total_points,
+                )
 
 
 def main_E3() -> None:

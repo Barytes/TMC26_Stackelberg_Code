@@ -1,0 +1,4 @@
+source_csv = outputs\e2_trial1_default\E2_provider_revenue_compare.csv
+rows = 25
+methods = Coop,Full model,ME,Rand,SingleSP
+n_users = 20,40,60,80,100
