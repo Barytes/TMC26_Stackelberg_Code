@@ -1,0 +1,17 @@
+config = configs\default.toml
+n_users = 50
+seed = 2026
+trials = 1
+solver_variant = vbbr_brd
+ratio_mode = fixed_product
+base_F = 100
+base_B = 40
+base_ratio = 2.5
+fixed_product = 4000
+ratio_list = 0.5,1,1.5,2,2.5,3,4
+same_user_realization_across_ratios_within_trial = true
+rows = 7
+runtime_sec = 7.9908591
+min_mean_social_cost_ratio = 2
+max_mean_joint_revenue_ratio = 0.5
+max_mean_offloading_ratio_ratio = 0.5
