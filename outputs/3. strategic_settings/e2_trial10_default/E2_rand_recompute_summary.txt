@@ -1,0 +1,8 @@
+config = configs\default.toml
+csv = outputs\3. strategic_settings\e2_trial10_default\E2_provider_revenue_compare.csv
+backup_csv = outputs\3. strategic_settings\e2_trial10_default\E2_provider_revenue_compare_before_rand_refresh.csv
+seed = 2026
+n_users_list = 20,40,60,80,100
+trials = 10
+method = Rand
+refresh_mode = recompute_rand_only

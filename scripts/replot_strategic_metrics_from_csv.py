@@ -24,6 +24,13 @@ METHOD_ORDER = ["Full model", "ME", "SingleSP", "Coop", "Rand"]
 METHOD_LABELS = {
     "Full model": "Stackelberg",
 }
+METHOD_COLORS = {
+    "Full model": "tab:blue",
+    "ME": "tab:orange",
+    "SingleSP": "tab:green",
+    "Coop": "tab:red",
+    "Rand": "tab:purple",
+}
 FIXED_X_TICKS = [20, 40, 60, 80, 100]
 X_AXIS_MARGIN = 4.0
 
@@ -98,27 +105,43 @@ def _plot_single_metric(
     ylabel: str,
     title: str,
     out_path: Path,
+    method_order: list[str] | None = None,
+    method_colors: dict[str, str] | None = None,
 ) -> None:
     grouped = _mean_std_by_method(rows, x_key, y_key)
     cmap = plt.get_cmap("tab10")
     fig, ax = plt.subplots(figsize=(8.5, 5.5), dpi=150)
-    for idx, method in enumerate(METHOD_ORDER):
+    order = method_order or METHOD_ORDER
+    for idx, method in enumerate(order):
         if method not in grouped:
             continue
         stats = grouped[method]
         x = np.asarray([item[0] for item in stats], dtype=float)
         y = np.asarray([item[1] for item in stats], dtype=float)
         e = np.asarray([item[2] for item in stats], dtype=float)
-        ax.errorbar(
-            x,
-            y,
-            yerr=e,
-            fmt="-o",
-            capsize=4,
-            linewidth=1.8,
-            markersize=5.5,
-            color=cmap(idx % 10),
+        mask = np.isfinite(x) & np.isfinite(y)
+        if not np.any(mask):
+            continue
+        x_plot = x[mask]
+        y_plot = y[mask]
+        e_plot = np.where(np.isfinite(e[mask]), e[mask], 0.0)
+        color = (method_colors or {}).get(method, METHOD_COLORS.get(method, cmap(idx % 10)))
+        ax.plot(
+            x_plot,
+            y_plot,
+            "-o",
+            linewidth=1.9,
+            markersize=5.2,
+            color=color,
             label=_display_method(method),
+        )
+        ax.fill_between(
+            x_plot,
+            y_plot - e_plot,
+            y_plot + e_plot,
+            color=color,
+            alpha=0.18,
+            linewidth=0.0,
         )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -170,6 +193,13 @@ def main() -> None:
         ylabel="ESP revenue",
         title="ESP Revenue vs. Number of Users",
         out_path=out_dir / "esp_revenue_compare.png",
+        method_order=["Full model", "ME", "Coop", "Rand"],
+        method_colors={
+            "Full model": "tab:blue",
+            "ME": "tab:orange",
+            "Coop": "tab:red",
+            "Rand": "tab:purple",
+        },
     )
     artifact_names.append("esp_revenue_compare.png")
     _plot_single_metric(
@@ -180,6 +210,13 @@ def main() -> None:
         ylabel="NSP revenue",
         title="NSP Revenue vs. Number of Users",
         out_path=out_dir / "nsp_revenue_compare.png",
+        method_order=["Full model", "ME", "Coop", "Rand"],
+        method_colors={
+            "Full model": "tab:blue",
+            "ME": "tab:orange",
+            "Coop": "tab:red",
+            "Rand": "tab:purple",
+        },
     )
     artifact_names.append("nsp_revenue_compare.png")
     _plot_single_metric(
@@ -228,8 +265,8 @@ def main() -> None:
         x_key="n_users",
         y_key="offloading_size",
         xlabel="Number of users",
-        ylabel="Number of offloading users",
-        title="Number of Offloading Users vs. Number of Users",
+        ylabel="Mean number of offloading users",
+        title="Mean Number of Offloading Users vs. Number of Users",
         out_path=out_dir / "offloading_users_compare.png",
     )
     artifact_names.append("offloading_users_compare.png")
@@ -292,6 +329,8 @@ def main() -> None:
         f"methods = {','.join(sorted({str(row['method']) for row in rows}))}",
         f"n_users = {','.join(str(int(x)) for x in sorted({int(row['n_users']) for row in rows}))}",
         f"legend_alias_full_model = {METHOD_LABELS['Full model']}",
+        "plot_style = line_plot_with_error_band",
+        "error_band = mean_plus_minus_std",
         f"x_ticks = {','.join(str(x) for x in FIXED_X_TICKS)}",
         f"x_limits = {min(FIXED_X_TICKS) - X_AXIS_MARGIN},{max(FIXED_X_TICKS) + X_AXIS_MARGIN}",
         f"artifacts = {','.join(artifact_names)}",

@@ -2583,64 +2583,158 @@ def _alternating_best_response_for_fixed_set(
     return (pE, pN), actual_iters, converged
 
 
+def _random_fixed_allocations_within_capacity(
+    data: _Data,
+    offloading_set: tuple[int, ...],
+    system: SystemConfig,
+    rng: np.random.Generator,
+) -> tuple[tuple[int, ...], np.ndarray, np.ndarray] | None:
+    n = data.cl.size
+    f = np.zeros(n, dtype=float)
+    b = np.zeros(n, dtype=float)
+    if not offloading_set:
+        return tuple(), f, b
+
+    idx = np.asarray(offloading_set, dtype=int)
+    m = int(idx.size)
+    for _ in range(32):
+        # Use moderately concentrated random shares to avoid pathological tiny allocations.
+        f_weights = rng.gamma(shape=4.0, scale=1.0, size=m)
+        b_weights = rng.gamma(shape=4.0, scale=1.0, size=m)
+        f_weights = f_weights / float(np.sum(f_weights))
+        b_weights = b_weights / float(np.sum(b_weights))
+
+        total_f = float(system.F) * float(rng.uniform(0.75, 1.0))
+        total_b = float(system.B) * float(rng.uniform(0.75, 1.0))
+        f_trial = np.zeros(n, dtype=float)
+        b_trial = np.zeros(n, dtype=float)
+        f_trial[idx] = f_weights * total_f
+        b_trial[idx] = b_weights * total_b
+
+        ce_trial = _offload_costs(data, f_trial, b_trial, float(system.cE), float(system.cN))
+        feasible_idx = idx[ce_trial[idx] <= data.cl[idx] + 1e-9]
+        if feasible_idx.size == 0:
+            continue
+        f_out = np.zeros(n, dtype=float)
+        b_out = np.zeros(n, dtype=float)
+        f_out[feasible_idx] = f_trial[feasible_idx]
+        b_out[feasible_idx] = b_trial[feasible_idx]
+        return _sorted_tuple(feasible_idx.tolist()), f_out, b_out
+    return None
+
+
+def _rand_monotone_joint_price_for_fixed_allocations(
+    data: _Data,
+    offloading_set: tuple[int, ...],
+    f: np.ndarray,
+    b: np.ndarray,
+    system: SystemConfig,
+) -> tuple[tuple[float, float], int, float] | None:
+    if not offloading_set:
+        return (float(system.cE), float(system.cN)), -1, 0.0
+
+    idx = np.asarray(offloading_set, dtype=int)
+    base_cost = data.aw[idx] / f[idx] + data.th[idx] / b[idx] + float(system.cE) * f[idx] + float(system.cN) * b[idx]
+    slack = data.cl[idx] - base_cost
+    if np.any(~np.isfinite(slack)) or np.any(slack < -1e-9):
+        return None
+
+    denom = f[idx] + b[idx]
+    valid = denom > 1e-12
+    if not np.any(valid):
+        return None
+
+    delta_candidates = slack[valid] / denom[valid]
+    delta_candidates = delta_candidates[np.isfinite(delta_candidates)]
+    if delta_candidates.size == 0:
+        return None
+
+    delta = float(np.min(delta_candidates))
+    if delta < 0.0:
+        return None
+
+    valid_idx = idx[valid]
+    boundary_user = int(valid_idx[int(np.argmin(slack[valid] / denom[valid]))])
+    return (float(system.cE + delta), float(system.cN + delta)), boundary_user, delta
+
+
+def _random_offloading_seed_from_users(users: UserBatch, base_seed: int) -> int:
+    seed = int(base_seed) + 707 + 1009 * int(users.n)
+    for arr in (users.w, users.d, users.fl, users.alpha, users.beta, users.rho):
+        signature = int(round(float(np.sum(np.asarray(arr, dtype=float))) * 1e6))
+        seed = (seed * 1315423911 + signature) % (2**63 - 1)
+    return int(seed)
+
+
 def baseline_random_offloading(
     users: UserBatch,
     system: SystemConfig,
     stack_cfg: StackelbergConfig,
     base_cfg: BaselineConfig,
 ) -> BaselineOutcome:
-    """Paper-facing Rand baseline based on randomized source offloading sets."""
-    rng = np.random.default_rng(base_cfg.random_seed + 707)
-    best: BaselineOutcome | None = None
-    for _ in range(base_cfg.random_offloading_trials):
+    """Random baseline with a fixed random offloading set and fixed random allocations."""
+    rng = np.random.default_rng(_random_offloading_seed_from_users(users, int(base_cfg.random_seed)))
+    data = _build_data(users)
+    for attempt in range(1, max(1, int(base_cfg.random_offloading_trials)) + 1):
         mask = rng.uniform(size=users.n) < base_cfg.random_offloading_prob
-        off = tuple(np.nonzero(mask)[0].tolist())
-        solved = _alternating_best_response_for_fixed_set(
-            users,
-            off,
-            (max(system.cE, stack_cfg.initial_pE), max(system.cN, stack_cfg.initial_pN)),
-            system,
-            max_iters=int(base_cfg.pbdr_max_iters),
-            tol=float(base_cfg.pbdr_tol),
-        )
-        price, actual_iters, converged = solved
-        if price is None:
+        source_off = tuple(np.nonzero(mask)[0].tolist())
+        if not source_off and users.n > 0:
+            source_off = (int(rng.integers(0, users.n)),)
+        allocations = _random_fixed_allocations_within_capacity(data, source_off, system, rng)
+        if allocations is None:
             continue
-        out = _evaluate(
+        off, f, b = allocations
+        solved = _rand_monotone_joint_price_for_fixed_allocations(
+            data,
+            off,
+            f,
+            b,
+            system,
+        )
+        if solved is None:
+            continue
+        price, boundary_user, delta = solved
+        out = _build_outcome_from_solver_allocations(
             users,
+            f,
+            b,
             off,
             price[0],
             price[1],
             system,
-            stack_cfg,
             "RandomOffloading",
             meta={
-                "source_set_size": len(off),
-                "br_iters": int(actual_iters),
-                "converged": str(bool(converged)).lower(),
-                "pricing_solver": "fixed_set_alternating_br",
+                "source_set_size": len(source_off),
+                "feasible_set_size": len(off),
+                "allocation_mode": "random_fixed_within_capacity",
+                "pricing_solver": "joint_monotone_increase_from_cost",
+                "boundary_user": int(boundary_user),
+                "price_delta": float(delta),
+                "attempt": int(attempt),
+                "selection_mode": "first_feasible_random_sample",
             },
         )
-        if best is None or (out.esp_revenue + out.nsp_revenue) > (best.esp_revenue + best.nsp_revenue):
-            best = out
-    if best is None:
-        best = _evaluate(
+        return out
+    return _build_outcome_from_solver_allocations(
             users,
+            np.zeros(users.n, dtype=float),
+            np.zeros(users.n, dtype=float),
             tuple(),
-            max(system.cE, stack_cfg.initial_pE),
-            max(system.cN, stack_cfg.initial_pN),
+            float(system.cE),
+            float(system.cN),
             system,
-            stack_cfg,
             "RandomOffloading",
             meta={
                 "source_set_size": 0,
-                "br_iters": 0,
-                "converged": "true",
-                "pricing_solver": "fixed_set_alternating_br",
+                "allocation_mode": "random_fixed_within_capacity",
+                "pricing_solver": "joint_monotone_increase_from_cost",
+                "boundary_user": -1,
+                "price_delta": 0.0,
+                "attempt": 0,
+                "selection_mode": "first_feasible_random_sample",
                 "fallback": "empty_set",
             },
         )
-    return best
 
 
 def proposed_gsse(

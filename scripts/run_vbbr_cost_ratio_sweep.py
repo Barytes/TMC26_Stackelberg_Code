@@ -27,9 +27,10 @@ os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 import numpy as np
 
-from _figure_wrapper_utils import resolve_out_dir, write_csv_rows
+from _figure_wrapper_utils import load_csv_rows, resolve_out_dir, write_csv_rows
 from tmc26_exp.config import ExperimentConfig, load_config
 from tmc26_exp.simulator import sample_users
 from tmc26_exp.stackelberg import solve_stage1_pricing
@@ -86,6 +87,60 @@ def _add_base_ratio_marker(ax: plt.Axes, base_ratio: float) -> None:
     ax.axvline(base_ratio, color="0.35", linestyle="--", linewidth=1.1, alpha=0.8)
 
 
+def _configure_fonts(language: str) -> None:
+    if language == "zh":
+        candidates = [
+            "Microsoft YaHei",
+            "SimHei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Arial Unicode MS",
+        ]
+        available = {entry.name for entry in font_manager.fontManager.ttflist}
+        chosen = [name for name in candidates if name in available]
+        if chosen:
+            existing = list(plt.rcParams.get("font.sans-serif", []))
+            plt.rcParams["font.sans-serif"] = chosen + [name for name in existing if name not in chosen]
+    plt.rcParams["axes.unicode_minus"] = False
+
+
+def _plot_metric_with_band(
+    ax: plt.Axes,
+    rows: list[dict[str, object]],
+    *,
+    y_key: str,
+    label: str,
+    color: str,
+    marker: str,
+    linestyle: str = "-",
+    zorder: float = 2.0,
+    markerfacecolor: str | None = None,
+) -> bool:
+    stats = _series_stats(rows, x_key="ratio", y_key=y_key)
+    x = np.asarray([item[0] for item in stats], dtype=float)
+    y = np.asarray([item[1] for item in stats], dtype=float)
+    e = np.asarray([item[2] for item in stats], dtype=float)
+    if np.all(~np.isfinite(y)):
+        return False
+    ax.plot(
+        x,
+        y,
+        color=color,
+        marker=marker,
+        linewidth=2.0,
+        markersize=5.8,
+        linestyle=linestyle,
+        markerfacecolor=(markerfacecolor if markerfacecolor is not None else color),
+        markeredgecolor=color,
+        markeredgewidth=1.1,
+        label=label,
+        zorder=zorder,
+    )
+    if np.any(np.isfinite(e) & (e > 0.0)):
+        ax.fill_between(x, y - e, y + e, color=color, alpha=0.14, zorder=max(zorder - 1.0, 0.0))
+    return True
+
+
 def _plot_multi_series(
     rows: list[dict[str, object]],
     *,
@@ -117,6 +172,81 @@ def _plot_multi_series(
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
+
+
+def _plot_offloading_dual_axis(
+    rows: list[dict[str, object]],
+    *,
+    out_path: Path,
+    title: str,
+    xlabel: str,
+    base_ratio: float,
+    xscale: str,
+    left_spec: tuple[str, str, str, str],
+    right_spec: tuple[str, str, str, str],
+    language: str,
+) -> None:
+    with plt.rc_context():
+        _configure_fonts(language)
+        fig, ax_left = plt.subplots(figsize=(8.8, 5.4), dpi=160)
+        ax_right = ax_left.twinx()
+
+        left_key, left_label, left_color, left_marker = left_spec
+        right_key, right_label, right_color, right_marker = right_spec
+
+        left_drawn = _plot_metric_with_band(
+            ax_left,
+            rows,
+            y_key=left_key,
+            label=left_label,
+            color=left_color,
+            marker=left_marker,
+            linestyle="--",
+            zorder=4.0,
+            markerfacecolor="white",
+        )
+        right_drawn = _plot_metric_with_band(
+            ax_right,
+            rows,
+            y_key=right_key,
+            label=right_label,
+            color=right_color,
+            marker=right_marker,
+            linestyle="-",
+            zorder=3.0,
+        )
+
+        _add_base_ratio_marker(ax_left, base_ratio)
+        ax_left.set_xscale(xscale)
+        ax_left.set_xlabel(xlabel)
+        ax_left.set_ylabel(left_label, color=left_color)
+        ax_right.set_ylabel(right_label, color=right_color)
+        ax_left.tick_params(axis="y", labelcolor=left_color)
+        ax_right.tick_params(axis="y", labelcolor=right_color)
+        left_stats = _series_stats(rows, x_key="ratio", y_key=left_key)
+        right_stats = _series_stats(rows, x_key="ratio", y_key=right_key)
+        left_vals = np.asarray([item[1] for item in left_stats], dtype=float)
+        right_vals = np.asarray([item[1] for item in right_stats], dtype=float)
+        left_finite = left_vals[np.isfinite(left_vals)]
+        right_finite = right_vals[np.isfinite(right_vals)]
+        ax_left.set_ylim(bottom=0.0)
+        ax_right.set_ylim(bottom=0.0)
+        if left_finite.size > 0:
+            left_upper = min(1.0, max(0.3, float(np.max(left_finite) * 1.25)))
+            ax_left.set_ylim(top=left_upper)
+        if right_finite.size > 0:
+            right_upper = max(float(np.max(right_finite) + 2.0), float(np.max(right_finite) * 1.15))
+            ax_right.set_ylim(top=right_upper)
+        ax_left.set_title(title)
+        ax_left.grid(alpha=0.25)
+
+        handles_left, labels_left = ax_left.get_legend_handles_labels()
+        handles_right, labels_right = ax_right.get_legend_handles_labels()
+        if left_drawn or right_drawn:
+            ax_left.legend(handles_left + handles_right, labels_left + labels_right, loc="best", fontsize=9)
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
 
 
 def _plot_single_metric_panels(
@@ -193,6 +323,59 @@ def _write_summary(
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _load_metric_rows(path: Path) -> list[dict[str, object]]:
+    int_keys = {
+        "trial",
+        "trial_seed",
+        "n_users",
+        "offloading_size",
+        "outer_iterations",
+        "stage2_oracle_calls",
+    }
+    float_keys = {
+        "ratio",
+        "cE",
+        "cN",
+        "final_pE",
+        "final_pN",
+        "price_margin_E",
+        "price_margin_N",
+        "comp_utilization",
+        "band_utilization",
+        "offloading_ratio",
+        "social_cost",
+        "esp_revenue",
+        "nsp_revenue",
+        "joint_revenue",
+        "restricted_gap",
+        "runtime_sec",
+    }
+    rows: list[dict[str, object]] = []
+    for raw in load_csv_rows(path):
+        row: dict[str, object] = {}
+        for key, value in raw.items():
+            if key in int_keys:
+                row[key] = int(value)
+            elif key in float_keys:
+                row[key] = float(value)
+            else:
+                row[key] = value
+        rows.append(row)
+    return rows
+
+
+def _load_summary_meta(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    meta: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if " = " not in line:
+            continue
+        key, value = line.split(" = ", 1)
+        meta[key.strip()] = value.strip()
+    return meta
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -214,101 +397,145 @@ def main() -> None:
     parser.add_argument("--fixed-cE", type=float, default=None)
     parser.add_argument("--xscale", type=str, default="auto", choices=["auto", "linear", "log"])
     parser.add_argument("--out-dir", type=str, default=None)
+    parser.add_argument(
+        "--metrics-csv",
+        type=str,
+        default=None,
+        help="Existing vbbr_cost_ratio_sweep_metrics.csv used to replot without rerunning the sweep.",
+    )
+    parser.add_argument(
+        "--base-ratio",
+        type=float,
+        default=None,
+        help="Reference cE/cN ratio for the vertical marker when replotting from an existing CSV.",
+    )
     args = parser.parse_args()
 
-    ratios = _parse_ratio_list(args.ratio_list)
-    out_dir = resolve_out_dir("run_vbbr_cost_ratio_sweep", args.out_dir)
-    cfg = _load_cfg(args.config, args.n_users)
-    stack_cfg = replace(cfg.stackelberg, stage1_solver_variant=str(args.solver_variant))
-    fixed_cE = float(cfg.system.cE if args.fixed_cE is None else args.fixed_cE)
-    base_ratio = float(fixed_cE / cfg.system.cN)
-    ratio_span = max(ratios) / min(ratios)
-    xscale = "log" if (args.xscale == "auto" and ratio_span >= 20.0) else str(args.xscale)
-    if xscale == "auto":
-        xscale = "linear"
+    metrics_csv = Path(args.metrics_csv) if args.metrics_csv else None
+    if args.out_dir is None and metrics_csv is not None:
+        out_dir = metrics_csv.resolve().parent
+    else:
+        out_dir = resolve_out_dir("run_vbbr_cost_ratio_sweep", args.out_dir)
 
-    rows: list[dict[str, object]] = []
-    t_total_start = time.perf_counter()
-    for trial in range(1, int(args.trials) + 1):
-        users = _sample_users_for_trial(cfg, args.seed, trial)
-        seed_for_trial = _trial_seed(args.seed, cfg.n_users, trial)
-        for ratio in ratios:
-            cN_val = float(fixed_cE / ratio)
-            system = replace(cfg.system, cE=fixed_cE, cN=cN_val)
-            t0 = time.perf_counter()
-            result = solve_stage1_pricing(users, system, stack_cfg)
-            runtime_sec = time.perf_counter() - t0
-
-            inner = result.inner_result
-            offloading_size = int(len(result.offloading_set))
-            comp_utilization = float(np.sum(inner.f) / system.F)
-            band_utilization = float(np.sum(inner.b) / system.B)
-            final_pE = float(result.price[0])
-            final_pN = float(result.price[1])
-            esp_revenue = float(result.esp_revenue)
-            nsp_revenue = float(result.nsp_revenue)
-
-            rows.append(
-                {
-                    "trial": int(trial),
-                    "trial_seed": int(seed_for_trial),
-                    "n_users": int(cfg.n_users),
-                    "ratio": float(ratio),
-                    "cE": float(system.cE),
-                    "cN": float(system.cN),
-                    "final_pE": final_pE,
-                    "final_pN": final_pN,
-                    "price_margin_E": float(final_pE - system.cE),
-                    "price_margin_N": float(final_pN - system.cN),
-                    "comp_utilization": comp_utilization,
-                    "band_utilization": band_utilization,
-                    "offloading_ratio": float(offloading_size / cfg.n_users if cfg.n_users > 0 else float("nan")),
-                    "offloading_size": offloading_size,
-                    "social_cost": float(result.social_cost),
-                    "esp_revenue": esp_revenue,
-                    "nsp_revenue": nsp_revenue,
-                    "joint_revenue": float(esp_revenue + nsp_revenue),
-                    "restricted_gap": float(result.restricted_gap),
-                    "outer_iterations": int(result.outer_iterations),
-                    "stage2_oracle_calls": int(result.stage2_oracle_calls),
-                    "runtime_sec": float(runtime_sec),
-                    "stage1_method": str(result.stage1_method),
-                    "stopping_reason": str(result.stopping_reason),
-                }
-            )
-    runtime_total_sec = time.perf_counter() - t_total_start
-
-    csv_path = out_dir / "vbbr_cost_ratio_sweep_metrics.csv"
-    write_csv_rows(
-        csv_path,
-        [
-            "trial",
-            "trial_seed",
-            "n_users",
-            "ratio",
-            "cE",
-            "cN",
-            "final_pE",
-            "final_pN",
-            "price_margin_E",
-            "price_margin_N",
-            "comp_utilization",
-            "band_utilization",
-            "offloading_ratio",
-            "offloading_size",
-            "social_cost",
-            "esp_revenue",
-            "nsp_revenue",
-            "joint_revenue",
-            "restricted_gap",
-            "outer_iterations",
-            "stage2_oracle_calls",
-            "runtime_sec",
-            "stage1_method",
-            "stopping_reason",
-        ],
-        rows,
+    rows: list[dict[str, object]]
+    runtime_total_sec: float | None = None
+    summary_meta = (
+        _load_summary_meta(metrics_csv.with_name("vbbr_cost_ratio_sweep_summary.txt")) if metrics_csv is not None else {}
     )
+
+    if metrics_csv is not None:
+        rows = _load_metric_rows(metrics_csv)
+        if not rows:
+            raise ValueError(f"No rows found in metrics CSV: {metrics_csv}")
+        ratios = sorted({float(row["ratio"]) for row in rows})
+        if args.base_ratio is not None:
+            base_ratio = float(args.base_ratio)
+        elif "base_ratio" in summary_meta:
+            base_ratio = float(summary_meta["base_ratio"])
+        else:
+            base_ratio = 1.0
+        if args.xscale == "auto":
+            xscale = summary_meta.get("xscale", "auto")
+            if xscale == "auto":
+                ratio_span = max(ratios) / min(ratios)
+                xscale = "log" if ratio_span >= 20.0 else "linear"
+        else:
+            xscale = str(args.xscale)
+    else:
+        ratios = _parse_ratio_list(args.ratio_list)
+        cfg = _load_cfg(args.config, args.n_users)
+        stack_cfg = replace(cfg.stackelberg, stage1_solver_variant=str(args.solver_variant))
+        fixed_cE = float(cfg.system.cE if args.fixed_cE is None else args.fixed_cE)
+        base_ratio = float(fixed_cE / cfg.system.cN)
+        ratio_span = max(ratios) / min(ratios)
+        xscale = "log" if (args.xscale == "auto" and ratio_span >= 20.0) else str(args.xscale)
+        if xscale == "auto":
+            xscale = "linear"
+
+        rows = []
+        t_total_start = time.perf_counter()
+        for trial in range(1, int(args.trials) + 1):
+            users = _sample_users_for_trial(cfg, args.seed, trial)
+            seed_for_trial = _trial_seed(args.seed, cfg.n_users, trial)
+            for ratio in ratios:
+                cN_val = float(fixed_cE / ratio)
+                system = replace(cfg.system, cE=fixed_cE, cN=cN_val)
+                t0 = time.perf_counter()
+                result = solve_stage1_pricing(users, system, stack_cfg)
+                runtime_sec = time.perf_counter() - t0
+
+                inner = result.inner_result
+                offloading_size = int(len(result.offloading_set))
+                comp_utilization = float(np.sum(inner.f) / system.F)
+                band_utilization = float(np.sum(inner.b) / system.B)
+                final_pE = float(result.price[0])
+                final_pN = float(result.price[1])
+                esp_revenue = float(result.esp_revenue)
+                nsp_revenue = float(result.nsp_revenue)
+
+                rows.append(
+                    {
+                        "trial": int(trial),
+                        "trial_seed": int(seed_for_trial),
+                        "n_users": int(cfg.n_users),
+                        "ratio": float(ratio),
+                        "cE": float(system.cE),
+                        "cN": float(system.cN),
+                        "final_pE": final_pE,
+                        "final_pN": final_pN,
+                        "price_margin_E": float(final_pE - system.cE),
+                        "price_margin_N": float(final_pN - system.cN),
+                        "comp_utilization": comp_utilization,
+                        "band_utilization": band_utilization,
+                        "offloading_ratio": float(
+                            offloading_size / cfg.n_users if cfg.n_users > 0 else float("nan")
+                        ),
+                        "offloading_size": offloading_size,
+                        "social_cost": float(result.social_cost),
+                        "esp_revenue": esp_revenue,
+                        "nsp_revenue": nsp_revenue,
+                        "joint_revenue": float(esp_revenue + nsp_revenue),
+                        "restricted_gap": float(result.restricted_gap),
+                        "outer_iterations": int(result.outer_iterations),
+                        "stage2_oracle_calls": int(result.stage2_oracle_calls),
+                        "runtime_sec": float(runtime_sec),
+                        "stage1_method": str(result.stage1_method),
+                        "stopping_reason": str(result.stopping_reason),
+                    }
+                )
+        runtime_total_sec = time.perf_counter() - t_total_start
+
+        csv_path = out_dir / "vbbr_cost_ratio_sweep_metrics.csv"
+        write_csv_rows(
+            csv_path,
+            [
+                "trial",
+                "trial_seed",
+                "n_users",
+                "ratio",
+                "cE",
+                "cN",
+                "final_pE",
+                "final_pN",
+                "price_margin_E",
+                "price_margin_N",
+                "comp_utilization",
+                "band_utilization",
+                "offloading_ratio",
+                "offloading_size",
+                "social_cost",
+                "esp_revenue",
+                "nsp_revenue",
+                "joint_revenue",
+                "restricted_gap",
+                "outer_iterations",
+                "stage2_oracle_calls",
+                "runtime_sec",
+                "stage1_method",
+                "stopping_reason",
+            ],
+            rows,
+        )
 
     _plot_multi_series(
         rows,
@@ -334,16 +561,27 @@ def main() -> None:
             ("band_utilization", "Bandwidth utilization", "tab:red", "s"),
         ],
     )
-    _plot_single_metric_panels(
+    _plot_offloading_dual_axis(
         rows,
         out_path=out_dir / "vbbr_cost_ratio_sweep_offloading.png",
-        title="VBBR sweep: offloading outcomes vs. cE/cN",
+        title=r"User offloading outcome vs. $c_E/c_N$",
+        xlabel=r"Service Provider cost ratio $c_E/c_N$",
         base_ratio=base_ratio,
         xscale=xscale,
-        panels=[
-            ("offloading_ratio", "Offloading ratio", "tab:purple", "o"),
-            ("offloading_size", "Number of offloading users", "tab:brown", "s"),
-        ],
+        left_spec=("offloading_ratio", "Offloading ratio", "tab:purple", "o"),
+        right_spec=("offloading_size", "Number of offloading users", "tab:brown", "s"),
+        language="en",
+    )
+    _plot_offloading_dual_axis(
+        rows,
+        out_path=out_dir / "vbbr_cost_ratio_sweep_offloading_zh.png",
+        title=r"用户卸载结果与 $c_E/c_N$ 的关系",
+        xlabel=r"服务提供商成本比 $c_E/c_N$",
+        base_ratio=base_ratio,
+        xscale=xscale,
+        left_spec=("offloading_ratio", "卸载比例", "tab:purple", "o"),
+        right_spec=("offloading_size", "卸载用户数", "tab:brown", "s"),
+        language="zh",
     )
     _plot_single_metric_panels(
         rows,
@@ -357,17 +595,18 @@ def main() -> None:
         ],
     )
 
-    _write_summary(
-        out_dir / "vbbr_cost_ratio_sweep_summary.txt",
-        args=args,
-        cfg=cfg,
-        fixed_cE=fixed_cE,
-        solver_variant=str(args.solver_variant),
-        ratios=ratios,
-        rows=rows,
-        runtime_sec=runtime_total_sec,
-        xscale=xscale,
-    )
+    if metrics_csv is None and runtime_total_sec is not None:
+        _write_summary(
+            out_dir / "vbbr_cost_ratio_sweep_summary.txt",
+            args=args,
+            cfg=cfg,
+            fixed_cE=fixed_cE,
+            solver_variant=str(args.solver_variant),
+            ratios=ratios,
+            rows=rows,
+            runtime_sec=runtime_total_sec,
+            xscale=xscale,
+        )
 
 
 if __name__ == "__main__":
