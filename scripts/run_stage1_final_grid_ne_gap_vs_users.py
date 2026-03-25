@@ -86,6 +86,8 @@ METHOD_SHORT_LABELS = {
     "MARL": "M",
 }
 
+N_MARKER_CYCLE = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h"]
+
 
 def _positive_int(raw: str) -> int:
     value = int(raw)
@@ -381,6 +383,66 @@ def _trial_tradeoff_points(
     return points
 
 
+def _n_style_map(points: list[dict[str, object]]) -> dict[int, dict[str, object]]:
+    n_values = sorted({int(point["n_users"]) for point in points})
+    if not n_values:
+        return {}
+    if len(n_values) == 1:
+        return {n_values[0]: {"marker": "o", "size": 62.0, "markersize": 7.8}}
+    min_size = 54.0
+    max_size = 82.0
+    style_map: dict[int, dict[str, object]] = {}
+    for idx, n_value in enumerate(n_values):
+        frac = idx / max(1, len(n_values) - 1)
+        style_map[n_value] = {
+            "marker": N_MARKER_CYCLE[idx % len(N_MARKER_CYCLE)],
+            "size": float(min_size + frac * (max_size - min_size)),
+            "markersize": float(7.0 + frac * 2.2),
+        }
+    return style_map
+
+
+def _trial_tradeoff_legend_handles(
+    *,
+    methods: list[str],
+    points: list[dict[str, object]],
+    method_label_overrides: dict[str, str] | None = None,
+) -> tuple[list[Line2D], list[Line2D]]:
+    method_label_overrides = method_label_overrides or {}
+    method_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor=METHOD_COLORS.get(method, "tab:gray"),
+            markeredgecolor="black",
+            markeredgewidth=0.9,
+            markersize=7.8,
+            linestyle="None",
+            label=method_label_overrides.get(method, method),
+        )
+        for method in methods
+    ]
+    style_map = _n_style_map(points)
+    n_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=str(style_map[n_value]["marker"]),
+            color="none",
+            markerfacecolor="white",
+            markeredgecolor="black",
+            markeredgewidth=1.0,
+            markersize=float(style_map[n_value]["markersize"]),
+            linestyle="None",
+            label=f"n={n_value}",
+        )
+        for n_value in sorted(style_map)
+    ]
+    return method_handles, n_handles
+
+
 def _print_frontier_summary(panel_name: str, points: list[dict[str, object]], frontier_indices: np.ndarray) -> None:
     tuples = [
         (
@@ -563,23 +625,31 @@ def _plot_tradeoff_trial_panel(
     y_label: str,
     panel_title: str,
 ) -> None:
+    style_map = _n_style_map(points)
+    n_values = sorted(style_map)
     for method in methods:
-        method_points = [point for point in points if str(point["method"]) == method]
-        if not method_points:
-            continue
-        xs = np.asarray([float(point["x"]) for point in method_points], dtype=float)
-        ys = np.asarray([float(point["y"]) for point in method_points], dtype=float)
-        ax.scatter(
-            xs,
-            ys,
-            s=58,
-            marker=METHOD_MARKERS.get(method, "o"),
-            facecolors=METHOD_COLORS.get(method, "tab:gray"),
-            edgecolors="black",
-            linewidths=0.9,
-            alpha=0.78,
-            label=method,
-        )
+        color = METHOD_COLORS.get(method, "tab:gray")
+        for n_value in n_values:
+            subset = [
+                point
+                for point in points
+                if str(point["method"]) == method and int(point["n_users"]) == int(n_value)
+            ]
+            if not subset:
+                continue
+            xs = np.asarray([float(point["x"]) for point in subset], dtype=float)
+            ys = np.asarray([float(point["y"]) for point in subset], dtype=float)
+            ax.scatter(
+                xs,
+                ys,
+                s=float(style_map[n_value]["size"]),
+                marker=str(style_map[n_value]["marker"]),
+                facecolors=color,
+                edgecolors="black",
+                linewidths=0.85,
+                alpha=0.74,
+                zorder=3,
+            )
     ax.set_xscale("log")
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
@@ -597,6 +667,7 @@ def plot_tradeoff_trial_figure(
     figure_title: str,
     panel_title_prefix: str,
     n_filter: int | None = None,
+    method_label_overrides: dict[str, str] | None = None,
 ) -> None:
     runtime_points = _trial_tradeoff_points(
         trial_rows,
@@ -630,30 +701,90 @@ def plot_tradeoff_trial_figure(
         y_label=y_label,
         panel_title=f"{panel_title_prefix} vs Stage-II calls{suffix}",
     )
-    handles = [
-        Line2D(
-            [0],
-            [0],
-            marker=METHOD_MARKERS.get(method, "o"),
-            color="none",
-            markerfacecolor=METHOD_COLORS.get(method, "tab:gray"),
-            markeredgecolor="black",
-            markeredgewidth=0.9,
-            markersize=7.5,
-            linestyle="None",
-            label=method,
-        )
-        for method in methods
-    ]
-    fig.legend(
-        handles=handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.0),
-        ncol=min(len(handles), 4),
-        frameon=True,
+    all_points = runtime_points + calls_points
+    method_handles, n_handles = _trial_tradeoff_legend_handles(
+        methods=methods,
+        points=all_points,
+        method_label_overrides=method_label_overrides,
     )
+    fig.legend(
+        handles=method_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.33, 1.01),
+        ncol=min(len(method_handles), 4),
+        frameon=True,
+        title="Method",
+    )
+    if len(n_handles) > 1:
+        fig.legend(
+            handles=n_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.80, 1.01),
+            ncol=min(len(n_handles), 5),
+            frameon=True,
+            title="n",
+        )
     fig.suptitle(figure_title, y=1.06)
     fig.tight_layout(rect=(0.02, 0.02, 0.98, 0.92))
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def plot_tradeoff_trial_single_panel(
+    trial_rows: list[dict[str, object]],
+    out_path: Path,
+    *,
+    methods: list[str],
+    x_metric: str,
+    x_label: str,
+    y_metric: str,
+    y_label: str,
+    title: str,
+    n_filter: int | None = None,
+    method_label_overrides: dict[str, str] | None = None,
+) -> None:
+    points = _trial_tradeoff_points(
+        trial_rows,
+        methods=methods,
+        x_metric=x_metric,
+        y_metric=y_metric,
+        n_filter=n_filter,
+    )
+    fig, ax = plt.subplots(figsize=(7.2, 5.6), dpi=150)
+    _plot_tradeoff_trial_panel(
+        ax,
+        points=points,
+        methods=methods,
+        x_label=x_label,
+        y_label=y_label,
+        panel_title=title,
+    )
+    method_handles, n_handles = _trial_tradeoff_legend_handles(
+        methods=methods,
+        points=points,
+        method_label_overrides=method_label_overrides,
+    )
+    method_legend = ax.legend(
+        handles=method_handles,
+        loc="upper right",
+        bbox_to_anchor=(1.0, 1.0),
+        frameon=True,
+        title="Method",
+        fontsize=8.5,
+        title_fontsize=9.5,
+    )
+    ax.add_artist(method_legend)
+    if len(n_handles) > 1:
+        ax.legend(
+            handles=n_handles,
+            loc="lower right",
+            bbox_to_anchor=(1.0, 0.02),
+            frameon=True,
+            title="n",
+            fontsize=8.5,
+            title_fontsize=9.5,
+        )
+    fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
 
@@ -1060,6 +1191,28 @@ def main() -> None:
             panel_title_prefix="Final gap",
             n_filter=30,
         )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_gap_trials_n30_runtime.png",
+            methods=plot_methods,
+            x_metric="runtime_sec",
+            x_label="Wall-clock runtime (s, log scale)",
+            y_metric="final_grid_ne_gap",
+            y_label="Final grid-evaluated NE gap",
+            title="Final gap vs runtime (n=30 trials)",
+            n_filter=30,
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_gap_trials_n30_stage2_calls.png",
+            methods=plot_methods,
+            x_metric="stage2_solver_calls",
+            x_label="Stage-II solver calls (log scale)",
+            y_metric="final_grid_ne_gap",
+            y_label="Final grid-evaluated NE gap",
+            title="Final gap vs Stage-II calls (n=30 trials)",
+            n_filter=30,
+        )
         plot_tradeoff_trial_figure(
             trial_rows,
             out_dir / "stage1_tradeoff_revenue_trials_n30.png",
@@ -1068,6 +1221,28 @@ def main() -> None:
             y_label="Joint provider revenue",
             figure_title="Stage-I tradeoff: joint revenue vs search cost (trial points, n=30)",
             panel_title_prefix="Joint revenue",
+            n_filter=30,
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_revenue_trials_n30_runtime.png",
+            methods=plot_methods,
+            x_metric="runtime_sec",
+            x_label="Wall-clock runtime (s, log scale)",
+            y_metric="joint_revenue",
+            y_label="Joint provider revenue",
+            title="Joint revenue vs runtime (n=30 trials)",
+            n_filter=30,
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_revenue_trials_n30_stage2_calls.png",
+            methods=plot_methods,
+            x_metric="stage2_solver_calls",
+            x_label="Stage-II solver calls (log scale)",
+            y_metric="joint_revenue",
+            y_label="Joint provider revenue",
+            title="Joint revenue vs Stage-II calls (n=30 trials)",
             n_filter=30,
         )
         plot_tradeoff_trial_figure(
@@ -1079,6 +1254,26 @@ def main() -> None:
             figure_title="Stage-I quality-efficiency tradeoff: final gap vs search cost (all trial points)",
             panel_title_prefix="Final gap",
         )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_gap_trials_all_runtime.png",
+            methods=plot_methods,
+            x_metric="runtime_sec",
+            x_label="Wall-clock runtime (s, log scale)",
+            y_metric="final_grid_ne_gap",
+            y_label="Final grid-evaluated NE gap",
+            title="Final gap vs runtime (all trial points)",
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_gap_trials_all_stage2_calls.png",
+            methods=plot_methods,
+            x_metric="stage2_solver_calls",
+            x_label="Stage-II solver calls (log scale)",
+            y_metric="final_grid_ne_gap",
+            y_label="Final grid-evaluated NE gap",
+            title="Final gap vs Stage-II calls (all trial points)",
+        )
         plot_tradeoff_trial_figure(
             trial_rows,
             out_dir / "stage1_tradeoff_revenue_trials_all.png",
@@ -1087,6 +1282,26 @@ def main() -> None:
             y_label="Joint provider revenue",
             figure_title="Stage-I tradeoff: joint revenue vs search cost (all trial points)",
             panel_title_prefix="Joint revenue",
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_revenue_trials_all_runtime.png",
+            methods=plot_methods,
+            x_metric="runtime_sec",
+            x_label="Wall-clock runtime (s, log scale)",
+            y_metric="joint_revenue",
+            y_label="Joint provider revenue",
+            title="Joint revenue vs runtime (all trial points)",
+        )
+        plot_tradeoff_trial_single_panel(
+            trial_rows,
+            out_dir / "stage1_tradeoff_revenue_trials_all_stage2_calls.png",
+            methods=plot_methods,
+            x_metric="stage2_solver_calls",
+            x_label="Stage-II solver calls (log scale)",
+            y_metric="joint_revenue",
+            y_label="Joint provider revenue",
+            title="Joint revenue vs Stage-II calls (all trial points)",
         )
 
 

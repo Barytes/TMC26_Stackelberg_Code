@@ -1,0 +1,43 @@
+n = 30
+data_source = /Users/beiyanliu/Desktop/TMC26_Stackelberg_Code/outputs/2. comp stackelberg baseline/run_stage1_final_grid_ne_gap_vs_users_20260324_153801/stage1_final_grid_ne_gap_vs_users.csv
+note = averages are computed over successful trials only
+
+[gap_vs_stage2_calls]
+x_axis = stage2_solver_calls
+y_axis = final_grid_ne_gap
+
+Proposed:
+mean_x = 57.4000000000
+mean_y = 4.5440102627
+
+GA:
+mean_x = 2738.4000000000
+mean_y = 3.3486453925
+
+BO:
+mean_x = 1071.0000000000
+mean_y = 4.1122187535
+
+MARL:
+mean_x = 60.4000000000
+mean_y = 13.5097748429
+
+[revenue_vs_runtime]
+x_axis = runtime_sec
+y_axis = joint_revenue
+
+Proposed:
+mean_x = 1.4068543602
+mean_y = 105.9155428021
+
+GA:
+mean_x = 180.8949990999
+mean_y = 75.6439330254
+
+BO:
+mean_x = 94.4047847399
+mean_y = 93.3535774710
+
+MARL:
+mean_x = 5.5907823998
+mean_y = 37.8470752629
