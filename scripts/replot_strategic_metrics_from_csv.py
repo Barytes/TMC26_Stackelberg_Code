@@ -21,6 +21,11 @@ from tmc26_exp.config import load_config
 
 
 METHOD_ORDER = ["Full model", "ME", "SingleSP", "Coop", "Rand"]
+METHOD_LABELS = {
+    "Full model": "Stackelberg",
+}
+FIXED_X_TICKS = [20, 40, 60, 80, 100]
+X_AXIS_MARGIN = 4.0
 
 
 def _load_rows(path: Path, *, F_total: float | None = None, B_total: float | None = None) -> list[dict[str, object]]:
@@ -32,6 +37,9 @@ def _load_rows(path: Path, *, F_total: float | None = None, B_total: float | Non
                 "n_users": int(raw["n_users"]),
                 "trial": int(raw["trial"]),
                 "social_cost": float(raw["social_cost"]),
+                "esp_revenue": float(raw["esp_revenue"]),
+                "nsp_revenue": float(raw["nsp_revenue"]),
+                "joint_revenue": float(raw["joint_revenue"]),
                 "comp_utilization": float(raw["comp_utilization"]),
                 "band_utilization": float(raw["band_utilization"]),
                 "final_pE": float(raw["final_pE"]),
@@ -77,7 +85,11 @@ def _mean_std_by_method(rows: list[dict[str, object]], x_key: str, y_key: str) -
     return out
 
 
-def _plot_lines(
+def _display_method(method: str) -> str:
+    return METHOD_LABELS.get(method, method)
+
+
+def _plot_single_metric(
     rows: list[dict[str, object]],
     *,
     x_key: str,
@@ -106,56 +118,15 @@ def _plot_lines(
             linewidth=1.8,
             markersize=5.5,
             color=cmap(idx % 10),
-            label=method,
+            label=_display_method(method),
         )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
+    ax.set_xticks(FIXED_X_TICKS)
+    ax.set_xlim(min(FIXED_X_TICKS) - X_AXIS_MARGIN, max(FIXED_X_TICKS) + X_AXIS_MARGIN)
     ax.grid(alpha=0.25)
     ax.legend(loc="best", fontsize=9)
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
-
-
-def _plot_two_panel(
-    rows: list[dict[str, object]],
-    *,
-    x_key: str,
-    panels: list[tuple[str, str]],
-    xlabel: str,
-    title: str,
-    out_path: Path,
-) -> None:
-    cmap = plt.get_cmap("tab10")
-    fig, axes = plt.subplots(1, 2, figsize=(12.8, 4.8), dpi=150)
-    for panel_idx, (y_key, ylabel) in enumerate(panels):
-        grouped = _mean_std_by_method(rows, x_key, y_key)
-        ax = axes[panel_idx]
-        for idx, method in enumerate(METHOD_ORDER):
-            if method not in grouped:
-                continue
-            stats = grouped[method]
-            x = np.asarray([item[0] for item in stats], dtype=float)
-            y = np.asarray([item[1] for item in stats], dtype=float)
-            e = np.asarray([item[2] for item in stats], dtype=float)
-            ax.errorbar(
-                x,
-                y,
-                yerr=e,
-                fmt="-o",
-                capsize=4,
-                linewidth=1.7,
-                markersize=5.0,
-                color=cmap(idx % 10),
-                label=method,
-            )
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel(ylabel)
-        ax.grid(alpha=0.25)
-        if panel_idx == 0:
-            ax.legend(loc="best", fontsize=8)
-    fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
@@ -178,7 +149,9 @@ def main() -> None:
     rows = _load_rows(csv_path, F_total=F_total, B_total=B_total)
     out_dir = resolve_out_dir("replot_strategic_metrics_from_csv", args.out_dir)
 
-    _plot_lines(
+    artifact_names: list[str] = []
+
+    _plot_single_metric(
         rows,
         x_key="n_users",
         y_key="social_cost",
@@ -187,41 +160,101 @@ def main() -> None:
         title="User Social Cost Comparison",
         out_path=out_dir / "user_social_cost_compare.png",
     )
-    _plot_two_panel(
+    artifact_names.append("user_social_cost_compare.png")
+
+    _plot_single_metric(
         rows,
         x_key="n_users",
-        panels=[
-            ("comp_utilization", "Computation utilization"),
-            ("band_utilization", "Bandwidth utilization"),
-        ],
         xlabel="Number of users",
-        title="Resource Utilization Comparison",
-        out_path=out_dir / "resource_utilization_compare.png",
+        y_key="esp_revenue",
+        ylabel="ESP revenue",
+        title="ESP Revenue vs. Number of Users",
+        out_path=out_dir / "esp_revenue_compare.png",
     )
-    _plot_two_panel(
+    artifact_names.append("esp_revenue_compare.png")
+    _plot_single_metric(
         rows,
         x_key="n_users",
-        panels=[
-            ("offloading_ratio", "Offloading ratio"),
-            ("offloading_size", "Number of offloading users"),
-        ],
         xlabel="Number of users",
-        title="Offloading Outcomes vs. Number of Users",
-        out_path=out_dir / "offloading_outcomes_compare.png",
+        y_key="nsp_revenue",
+        ylabel="NSP revenue",
+        title="NSP Revenue vs. Number of Users",
+        out_path=out_dir / "nsp_revenue_compare.png",
     )
-    _plot_two_panel(
+    artifact_names.append("nsp_revenue_compare.png")
+    _plot_single_metric(
         rows,
         x_key="n_users",
-        panels=[
-            ("final_pE", "Final pE"),
-            ("final_pN", "Final pN"),
-        ],
         xlabel="Number of users",
-        title="Price Outcomes vs. Number of Users",
-        out_path=out_dir / "price_outcomes_compare.png",
+        y_key="joint_revenue",
+        ylabel="Joint revenue",
+        title="Joint Revenue vs. Number of Users",
+        out_path=out_dir / "joint_revenue_compare.png",
     )
+    artifact_names.append("joint_revenue_compare.png")
+
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="comp_utilization",
+        xlabel="Number of users",
+        ylabel="Computation utilization",
+        title="Computation Utilization vs. Number of Users",
+        out_path=out_dir / "comp_utilization_compare.png",
+    )
+    artifact_names.append("comp_utilization_compare.png")
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="band_utilization",
+        xlabel="Number of users",
+        ylabel="Bandwidth utilization",
+        title="Bandwidth Utilization vs. Number of Users",
+        out_path=out_dir / "band_utilization_compare.png",
+    )
+    artifact_names.append("band_utilization_compare.png")
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="offloading_ratio",
+        xlabel="Number of users",
+        ylabel="Offloading ratio",
+        title="Offloading Ratio vs. Number of Users",
+        out_path=out_dir / "offloading_ratio_compare.png",
+    )
+    artifact_names.append("offloading_ratio_compare.png")
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="offloading_size",
+        xlabel="Number of users",
+        ylabel="Number of offloading users",
+        title="Number of Offloading Users vs. Number of Users",
+        out_path=out_dir / "offloading_users_compare.png",
+    )
+    artifact_names.append("offloading_users_compare.png")
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="final_pE",
+        xlabel="Number of users",
+        ylabel="Final pE",
+        title="Final pE vs. Number of Users",
+        out_path=out_dir / "final_pE_compare.png",
+    )
+    artifact_names.append("final_pE_compare.png")
+    _plot_single_metric(
+        rows,
+        x_key="n_users",
+        y_key="final_pN",
+        xlabel="Number of users",
+        ylabel="Final pN",
+        title="Final pN vs. Number of Users",
+        out_path=out_dir / "final_pN_compare.png",
+    )
+    artifact_names.append("final_pN_compare.png")
     if F_total is not None and B_total is not None:
-        _plot_lines(
+        _plot_single_metric(
             rows,
             x_key="n_users",
             y_key="total_user_payment",
@@ -230,7 +263,8 @@ def main() -> None:
             title="Total User Payment vs. Number of Users",
             out_path=out_dir / "total_user_payment_compare.png",
         )
-        _plot_lines(
+        artifact_names.append("total_user_payment_compare.png")
+        _plot_single_metric(
             rows,
             x_key="n_users",
             y_key="avg_payment_per_offloading_user",
@@ -239,12 +273,28 @@ def main() -> None:
             title="Average Payment per Offloading User vs. Number of Users",
             out_path=out_dir / "avg_payment_per_offloading_user_compare.png",
         )
+        artifact_names.append("avg_payment_per_offloading_user_compare.png")
+
+    # Remove stale multi-panel outputs so the directory contains only the redrawn single-panel versions.
+    for stale_name in [
+        "E2_provider_revenue_compare.png",
+        "resource_utilization_compare.png",
+        "offloading_outcomes_compare.png",
+        "price_outcomes_compare.png",
+    ]:
+        stale_path = out_dir / stale_name
+        if stale_path.exists():
+            stale_path.unlink()
 
     summary_lines = [
         f"source_csv = {csv_path}",
         f"rows = {len(rows)}",
         f"methods = {','.join(sorted({str(row['method']) for row in rows}))}",
         f"n_users = {','.join(str(int(x)) for x in sorted({int(row['n_users']) for row in rows}))}",
+        f"legend_alias_full_model = {METHOD_LABELS['Full model']}",
+        f"x_ticks = {','.join(str(x) for x in FIXED_X_TICKS)}",
+        f"x_limits = {min(FIXED_X_TICKS) - X_AXIS_MARGIN},{max(FIXED_X_TICKS) + X_AXIS_MARGIN}",
+        f"artifacts = {','.join(artifact_names)}",
     ]
     if args.config:
         summary_lines.extend(

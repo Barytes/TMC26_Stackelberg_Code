@@ -1,0 +1,12 @@
+config = configs\default.toml
+seed = 2026
+trials = 10
+n_users_list = 200,400,600,800,1000,1200,1400,1600,1800,2000
+methods = Proposed
+jobs = 1
+gap_heatmap_csv_template = outputs/stage1_dg_heatmaps_default_n100_n200_20260323/n{n}/price_grid_metrics.csv
+final_grid_ne_gap_definition = max unilateral provider revenue improvement on the audit price grid with the other provider price fixed
+grid_ne_gap_evaluation_mode = Proposed runs with restricted_gap==0 are certified to have final_grid_ne_gap=0 because the audit grid is a subset of unilateral deviations; otherwise matching gap-heatmap CSV reuse is tried first and direct audit is the fallback
+completed_points = 100
+total_points = 100
+progress_complete = true

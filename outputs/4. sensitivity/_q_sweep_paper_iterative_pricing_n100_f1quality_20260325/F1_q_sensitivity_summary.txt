@@ -1,0 +1,32 @@
+[run]
+figure_id = F1
+block = F
+script = run_figure_F1_q_sensitivity.py
+output_dir = C:\Users\a1831\Desktop\TMC26_Stackelberg_Code\outputs\_q_sweep_paper_iterative_pricing_n100_f1quality_20260325
+
+[artifacts]
+primary_image = F1_q_sensitivity.png
+primary_csv = F1_q_sensitivity.csv
+summary_file = F1_q_sensitivity_summary.txt
+
+[inputs]
+config = configs/_tmp_default_paper_iterative_pricing.toml
+seed = 2026
+n_users = 100
+n_trials = 10
+
+[primary_metrics]
+q_list = 1,2,3,4,5,6
+stage1_solver_variant = paper_iterative_pricing
+q_mapping = paper_local_Q = Q
+plot_mode = quality_runtime_calls
+progress_completed_points = 60
+progress_total_points = 60
+progress_status = completed
+recorded_metrics = candidate_family_size,restricted_gap,grid_ne_gap,runtime_sec,stage2_calls,final_pE,final_pN
+grid_ne_gap_source = heatmap_csv_nearest
+grid_ne_gap_heatmap_csv = outputs\stage1_dg_heatmaps_default_n100_n200_20260323\n100\price_grid_metrics.csv
+grid_ne_gap_definition = precomputed grid_ne_gap surface value at the nearest heatmap grid point to each returned final price
+
+[runtime]
+runtime_sec = 

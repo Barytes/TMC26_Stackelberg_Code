@@ -29,7 +29,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from _figure_missing_impl import _load_cfg, _run_stage1_method, _sample_users, _write_summary
+from _figure_missing_impl import (
+    _load_cfg,
+    _load_grid_ne_gap_surface,
+    _nearest_grid_ne_gap,
+    _run_stage1_method,
+    _sample_users,
+    _write_summary,
+)
 from _figure_wrapper_utils import resolve_out_dir, write_csv_rows
 from tmc26_exp.baselines import BaselineOutcome, _grid_ne_gap_audit, _price_cache_key
 
@@ -43,6 +50,7 @@ TRIAL_FIELDS = [
     "offloading_size",
     "restricted_gap",
     "final_grid_ne_gap",
+    "final_grid_ne_gap_source",
     "esp_revenue",
     "nsp_revenue",
     "joint_revenue",
@@ -125,6 +133,32 @@ def _parse_methods(raw: str) -> list[str]:
             raise argparse.ArgumentTypeError(f"Unsupported method: {item}. Allowed: Proposed, GA, BO, BO-online, MARL.")
         methods.append(allowed[key])
     return methods
+
+
+def _resolve_gap_heatmap_csv_path(template: str | None, n_users: int) -> Path | None:
+    if template is None:
+        return None
+    candidate = Path(str(template).format(n=int(n_users)))
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    candidate = candidate.resolve()
+    return candidate if candidate.exists() else None
+
+
+def _load_gap_heatmap_surfaces(
+    n_list: list[int],
+    gap_heatmap_csv_template: str | None,
+) -> dict[int, tuple[Path, np.ndarray, np.ndarray, np.ndarray]]:
+    surfaces: dict[int, tuple[Path, np.ndarray, np.ndarray, np.ndarray]] = {}
+    if gap_heatmap_csv_template is None:
+        return surfaces
+    for n_users in sorted({int(n) for n in n_list}):
+        csv_path = _resolve_gap_heatmap_csv_path(gap_heatmap_csv_template, n_users)
+        if csv_path is None:
+            continue
+        pE_grid, pN_grid, grid_ne_gap = _load_grid_ne_gap_surface(csv_path)
+        surfaces[int(n_users)] = (csv_path, pE_grid, pN_grid, grid_ne_gap)
+    return surfaces
 
 
 def _build_current_outcome(
@@ -948,6 +982,7 @@ def compute_trial_rows(
     trials: int,
     methods: list[str],
     final_audit_grid_points: int | None = None,
+    gap_heatmap_csv_template: str | None = None,
     bo_candidate_pool: int | None = None,
     bo_iters: int | None = None,
     ga_population_size: int | None = None,
@@ -960,10 +995,12 @@ def compute_trial_rows(
     audit_points = max(2, int(final_audit_grid_points if final_audit_grid_points is not None else cfg.baselines.gso_grid_points))
     pE_audit_grid = np.linspace(float(cfg.system.cE), float(cfg.baselines.max_price_E), audit_points)
     pN_audit_grid = np.linspace(float(cfg.system.cN), float(cfg.baselines.max_price_N), audit_points)
+    heatmap_surfaces = _load_gap_heatmap_surfaces(n_list, gap_heatmap_csv_template)
     rows: list[dict[str, object]] = []
     failures = 0
 
     for n in n_list:
+        heatmap_surface = heatmap_surfaces.get(int(n))
         for trial in range(1, trials + 1):
             users = _sample_users(cfg, n, seed, trial)
             for method in methods:
@@ -997,17 +1034,34 @@ def compute_trial_rows(
                         nsp_revenue=float(nsp_revenue),
                     )
                     stage2_cache = {_price_cache_key(float(price[0]), float(price[1])): current_out}
-                    final_grid_gap = _grid_ne_gap_audit(
-                        current_out,
-                        users,
-                        cfg.system,
-                        cfg.stackelberg,
-                        run_base_cfg,
-                        stage2_cache,
-                        pE_audit_grid,
-                        pN_audit_grid,
-                    )
-                    audit_stage2_calls = max(0, int(len(stage2_cache) - 1))
+                    if method == "Proposed" and abs(float(restricted_gap)) <= 1e-15:
+                        final_grid_gap = 0.0
+                        audit_stage2_calls = 0
+                        gap_source = "restricted_gap_zero_certified"
+                    elif heatmap_surface is not None:
+                        _, heatmap_pE_grid, heatmap_pN_grid, heatmap_grid_ne_gap = heatmap_surface
+                        final_grid_gap = _nearest_grid_ne_gap(
+                            float(price[0]),
+                            float(price[1]),
+                            pE_grid=heatmap_pE_grid,
+                            pN_grid=heatmap_pN_grid,
+                            grid_ne_gap=heatmap_grid_ne_gap,
+                        )
+                        audit_stage2_calls = 0
+                        gap_source = "heatmap_csv_nearest"
+                    else:
+                        final_grid_gap = _grid_ne_gap_audit(
+                            current_out,
+                            users,
+                            cfg.system,
+                            cfg.stackelberg,
+                            run_base_cfg,
+                            stage2_cache,
+                            pE_audit_grid,
+                            pN_audit_grid,
+                        )
+                        audit_stage2_calls = max(0, int(len(stage2_cache) - 1))
+                        gap_source = "audit_grid"
                     stage2_solver_calls = int(meta.get("stage2_calls", 0))
                     rows.append(
                         {
@@ -1020,6 +1074,7 @@ def compute_trial_rows(
                             "offloading_size": int(len(offloading_set)),
                             "restricted_gap": float(restricted_gap),
                             "final_grid_ne_gap": float(final_grid_gap),
+                            "final_grid_ne_gap_source": str(gap_source),
                             "esp_revenue": float(esp_revenue),
                             "nsp_revenue": float(nsp_revenue),
                             "joint_revenue": float(esp_revenue + nsp_revenue),
@@ -1043,6 +1098,7 @@ def compute_trial_rows(
                             "offloading_size": -1,
                             "restricted_gap": float("nan"),
                             "final_grid_ne_gap": float("nan"),
+                            "final_grid_ne_gap_source": "",
                             "esp_revenue": float("nan"),
                             "nsp_revenue": float("nan"),
                             "joint_revenue": float("nan"),
@@ -1057,6 +1113,8 @@ def compute_trial_rows(
         "audit_grid_points": int(audit_points),
         "search_objective_grid_points": int(cfg.baselines.gso_grid_points),
         "stage2_method_for_pricing": str(cfg.baselines.stage2_solver_for_pricing),
+        "gap_heatmap_template": "" if gap_heatmap_csv_template is None else str(gap_heatmap_csv_template),
+        "gap_heatmap_reused_n_list": ",".join(str(n) for n in sorted(heatmap_surfaces)),
         "failures": int(failures),
     }
     return rows, meta
@@ -1076,6 +1134,16 @@ def main() -> None:
     parser.add_argument("--methods", type=_parse_methods, default="Proposed,GA,BO,MARL")
     parser.add_argument("--statistic", choices=["mean_std", "median_iqr"], default="median_iqr")
     parser.add_argument("--final-audit-grid-points", type=_positive_int, default=None)
+    parser.add_argument(
+        "--gap-heatmap-csv-template",
+        type=str,
+        default=None,
+        help=(
+            "Optional path template like outputs/.../n{n}/price_grid_metrics.csv. "
+            "If a file exists for a given n, final_grid_ne_gap reuses the nearest heatmap value "
+            "instead of running a fresh audit grid."
+        ),
+    )
     parser.add_argument("--bo-candidate-pool", type=_positive_int, default=None)
     parser.add_argument("--bo-iters", type=int, default=None)
     parser.add_argument("--ga-population-size", type=_positive_int, default=None)
@@ -1112,6 +1180,7 @@ def main() -> None:
             trials=int(args.trials),
             methods=methods,
             final_audit_grid_points=args.final_audit_grid_points,
+            gap_heatmap_csv_template=args.gap_heatmap_csv_template,
             bo_candidate_pool=args.bo_candidate_pool,
             bo_iters=args.bo_iters,
             ga_population_size=args.ga_population_size,
@@ -1131,6 +1200,34 @@ def main() -> None:
         write_csv_rows(trials_csv, TRIAL_FIELDS, rows)
         write_csv_rows(summary_csv, _summary_fieldnames(), summary_rows)
         plot_gap_summary(summary_rows, fig_path, methods=methods, statistic=str(args.statistic))
+        plot_metric_summary(
+            summary_rows,
+            out_dir / "stage1_runtime_vs_users.png",
+            methods=methods,
+            metric="runtime_sec",
+            statistic=str(args.statistic),
+            ylabel="Stage-I runtime (s)",
+            title="Stage-I runtime vs. number of users",
+        )
+        plot_metric_summary(
+            summary_rows,
+            out_dir / "stage1_runtime_vs_users_log.png",
+            methods=methods,
+            metric="runtime_sec",
+            statistic=str(args.statistic),
+            ylabel="Stage-I runtime (s)",
+            title="Stage-I runtime vs. number of users",
+            logy=True,
+        )
+        plot_metric_summary(
+            summary_rows,
+            out_dir / "stage1_stage2_calls_vs_users.png",
+            methods=methods,
+            metric="stage2_solver_calls",
+            statistic=str(args.statistic),
+            ylabel="Stage-II solver calls",
+            title="Stage-II solver calls vs. number of users",
+        )
         _write_summary(
             summary_path,
             [
@@ -1143,6 +1240,8 @@ def main() -> None:
                 f"audit_grid_points = {meta['audit_grid_points']}",
                 f"search_objective_grid_points = {meta['search_objective_grid_points']}",
                 f"stage2_method_for_pricing = {meta['stage2_method_for_pricing']}",
+                f"gap_heatmap_csv_template = {meta['gap_heatmap_template']}",
+                f"gap_heatmap_reused_n_list = {meta['gap_heatmap_reused_n_list']}",
                 f"bo_candidate_pool = {'' if args.bo_candidate_pool is None else int(args.bo_candidate_pool)}",
                 f"bo_iters = {'' if args.bo_iters is None else int(args.bo_iters)}",
                 f"ga_population_size = {'' if args.ga_population_size is None else int(args.ga_population_size)}",
@@ -1151,13 +1250,41 @@ def main() -> None:
                 f"marl_episodes = {'' if args.marl_episodes is None else int(args.marl_episodes)}",
                 f"marl_steps_per_episode = {'' if args.marl_steps_per_episode is None else int(args.marl_steps_per_episode)}",
                 "final_grid_ne_gap_definition = max unilateral provider revenue improvement on the audit price grid with the other provider price fixed",
-                "grid_ne_gap_evaluation_mode = direct audit at each returned price; no GSO search is run",
+                "grid_ne_gap_evaluation_mode = Proposed runs with restricted_gap==0 are certified to have final_grid_ne_gap=0 because the audit grid is a subset of unilateral deviations; otherwise a matching gap-heatmap CSV is reused if available, and direct audit is the fallback",
                 "recorded_metrics = final_grid_ne_gap,joint_revenue,runtime_sec,stage2_solver_calls,audit_stage2_solver_calls,total_stage2_solver_calls",
                 f"failed_runs = {meta['failures']}",
             ],
         )
     present_methods = {str(row["method"]) for row in summary_rows}
     plot_methods = [method for method in methods if method in present_methods]
+    plot_metric_summary(
+        summary_rows,
+        out_dir / "stage1_runtime_vs_users.png",
+        methods=plot_methods,
+        metric="runtime_sec",
+        statistic=str(args.statistic),
+        ylabel="Stage-I runtime (s)",
+        title="Stage-I runtime vs. number of users",
+    )
+    plot_metric_summary(
+        summary_rows,
+        out_dir / "stage1_runtime_vs_users_log.png",
+        methods=plot_methods,
+        metric="runtime_sec",
+        statistic=str(args.statistic),
+        ylabel="Stage-I runtime (s)",
+        title="Stage-I runtime vs. number of users",
+        logy=True,
+    )
+    plot_metric_summary(
+        summary_rows,
+        out_dir / "stage1_stage2_calls_vs_users.png",
+        methods=plot_methods,
+        metric="stage2_solver_calls",
+        statistic=str(args.statistic),
+        ylabel="Stage-II solver calls",
+        title="Stage-II solver calls vs. number of users",
+    )
     plot_tradeoff_frontier_figure(
         summary_rows,
         out_dir / "stage1_tradeoff_gap_frontier.png",

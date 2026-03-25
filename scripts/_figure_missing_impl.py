@@ -19,7 +19,7 @@ for path in (ROOT, SRC):
     if text not in sys.path:
         sys.path.insert(0, text)
 
-cache_root = Path(os.environ.get("TMC26_CACHE_DIR", "/tmp/tmc26_cache"))
+cache_root = Path(os.environ.get("TMC26_CACHE_DIR", str(ROOT / "outputs" / "_tmp_cache" / "tmc26_cache")))
 mpl_cache = cache_root / "matplotlib"
 xdg_cache = cache_root / "xdg"
 mpl_cache.mkdir(parents=True, exist_ok=True)
@@ -2130,6 +2130,173 @@ def main_E4() -> None:
     _write_summary(out_dir / "E4_price_and_offloading_compare_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"trials = {args.trials}", f"n_users_list = {args.n_users_list}"])
 
 
+def _f1_rows_from_csv(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+
+    def _float_value(row: dict[str, str], key: str) -> float:
+        value = str(row.get(key, "")).strip()
+        return float(value) if value else float("nan")
+
+    def _int_value(row: dict[str, str], key: str) -> int:
+        value = str(row.get(key, "")).strip()
+        return int(float(value)) if value else 0
+
+    rows: list[dict[str, object]] = []
+    for row in load_csv_rows(path):
+        rows.append(
+            {
+                "method": str(row.get("method", "Proposed")),
+                "Q": _int_value(row, "Q"),
+                "trial": _int_value(row, "trial"),
+                "candidate_family_size": _float_value(row, "candidate_family_size"),
+                "restricted_gap": _float_value(row, "restricted_gap"),
+                "grid_ne_gap": _float_value(row, "grid_ne_gap"),
+                "runtime_sec": _float_value(row, "runtime_sec"),
+                "stage2_calls": _int_value(row, "stage2_calls"),
+                "final_pE": _float_value(row, "final_pE"),
+                "final_pN": _float_value(row, "final_pN"),
+            }
+        )
+    return rows
+
+
+def _write_f1_outputs(
+    *,
+    out_dir: Path,
+    rows: list[dict[str, object]],
+    cfg: ExperimentConfig,
+    config_path: str,
+    seed: int,
+    n_users: int,
+    q_list: list[int],
+    trials: int,
+    plot_mode: str,
+    grid_csv_path: Path | None,
+    completed_points: int,
+    total_points: int,
+) -> None:
+    csv_path = out_dir / "F1_q_sensitivity.csv"
+    stats_path = out_dir / "F1_q_sensitivity_stats.csv"
+    fig_path = out_dir / "F1_q_sensitivity.png"
+    summary_path = out_dir / "F1_q_sensitivity_summary.txt"
+
+    fieldnames = [
+        "method",
+        "Q",
+        "trial",
+        "candidate_family_size",
+        "restricted_gap",
+        "grid_ne_gap",
+        "runtime_sec",
+        "stage2_calls",
+        "final_pE",
+        "final_pN",
+    ]
+    write_csv_rows(csv_path, fieldnames, rows)
+
+    stats_rows: list[dict[str, object]] = []
+    stats_fieldnames = [
+        "Q",
+        "trials",
+        "candidate_family_size_mean",
+        "candidate_family_size_std",
+        "candidate_family_size_median",
+        "restricted_gap_mean",
+        "restricted_gap_std",
+        "restricted_gap_median",
+        "grid_ne_gap_mean",
+        "grid_ne_gap_std",
+        "grid_ne_gap_median",
+        "runtime_sec_mean",
+        "runtime_sec_std",
+        "runtime_sec_median",
+        "stage2_calls_mean",
+        "stage2_calls_std",
+        "stage2_calls_median",
+        "final_pE_mean",
+        "final_pE_std",
+        "final_pE_median",
+        "final_pN_mean",
+        "final_pN_std",
+        "final_pN_median",
+    ]
+    metric_keys = [
+        "candidate_family_size",
+        "restricted_gap",
+        "grid_ne_gap",
+        "runtime_sec",
+        "stage2_calls",
+        "final_pE",
+        "final_pN",
+    ]
+    for q in sorted({int(row["Q"]) for row in rows}):
+        subset = [row for row in rows if int(row["Q"]) == q]
+        stat_row: dict[str, object] = {"Q": int(q), "trials": len(subset)}
+        for key in metric_keys:
+            values = np.asarray([float(row[key]) for row in subset if np.isfinite(float(row[key]))], dtype=float)
+            if values.size == 0:
+                stat_row[f"{key}_mean"] = float("nan")
+                stat_row[f"{key}_std"] = float("nan")
+                stat_row[f"{key}_median"] = float("nan")
+            else:
+                stat_row[f"{key}_mean"] = float(np.mean(values))
+                stat_row[f"{key}_std"] = float(np.std(values))
+                stat_row[f"{key}_median"] = float(np.median(values))
+        stats_rows.append(stat_row)
+    write_csv_rows(stats_path, stats_fieldnames, stats_rows)
+
+    if plot_mode == "quality_runtime_calls":
+        panels = [
+            ("grid_ne_gap", "Final grid-evaluated NE gap"),
+            ("runtime_sec", "Runtime (sec)"),
+            ("stage2_calls", "Stage-II solver calls"),
+        ]
+        title = "Sensitivity to Q: final grid NE gap, runtime, and Stage-II calls"
+    else:
+        panels = [
+            ("candidate_family_size", "Candidate-family size"),
+            ("restricted_gap", "Final restricted gap"),
+            ("runtime_sec", "Runtime (sec)"),
+        ]
+        title = "Sensitivity to local candidate-family size Q"
+    _plot_three_panel(rows, x_key="Q", panels=panels, xlabel="Q", title=title, out_path=fig_path, method_order=["Proposed"])
+
+    solver_variant = str(cfg.stackelberg.stage1_solver_variant)
+    if solver_variant == "paper_iterative_pricing":
+        q_mapping = "paper_local_Q = Q"
+    elif solver_variant == "vbbr_brd":
+        q_mapping = f"vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget fixed at {int(cfg.stackelberg.vbbr_local_budget)}"
+    else:
+        q_mapping = "solver-specific Q override"
+
+    summary_lines = [
+        f"config = {config_path}",
+        f"seed = {seed}",
+        f"n_users = {n_users}",
+        f"q_list = {','.join(str(int(q)) for q in q_list)}",
+        f"trials = {trials}",
+        f"stage1_solver_variant = {solver_variant}",
+        f"q_mapping = {q_mapping}",
+        f"plot_mode = {plot_mode}",
+        f"progress_completed_points = {completed_points}",
+        f"progress_total_points = {total_points}",
+        f"progress_status = {'completed' if completed_points >= total_points else 'running'}",
+        "recorded_metrics = candidate_family_size,restricted_gap,grid_ne_gap,runtime_sec,stage2_calls,final_pE,final_pN",
+    ]
+    if grid_csv_path is not None:
+        summary_lines.extend(
+            [
+                "grid_ne_gap_source = heatmap_csv_nearest",
+                f"grid_ne_gap_heatmap_csv = {grid_csv_path}",
+                "grid_ne_gap_definition = precomputed grid_ne_gap surface value at the nearest heatmap grid point to each returned final price",
+            ]
+        )
+    else:
+        summary_lines.append("grid_ne_gap_source = none")
+    _write_summary(summary_path, summary_lines)
+
+
 def main_F1() -> None:
     parser = argparse.ArgumentParser(description="Figure F1: Q sensitivity.")
     parser.add_argument("--config", type=str, default="configs/figures/paper_base.toml")
@@ -2137,23 +2304,96 @@ def main_F1() -> None:
     parser.add_argument("--n-users", type=int, default=40)
     parser.add_argument("--q-list", type=str, default="1,2,3,4,5,6")
     parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument("--plot-mode", type=str, choices=["default", "quality_runtime_calls"], default="default")
+    parser.add_argument("--grid-ne-gap-csv", type=str, default=None)
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
     out_dir = resolve_out_dir("run_figure_F1_q_sensitivity", args.out_dir)
     cfg = _load_cfg(args.config, n_users=args.n_users)
-    rows: list[dict[str, object]] = []
-    for q in [int(x) for x in args.q_list.split(",") if x.strip()]:
-        stack_cfg = replace(cfg.stackelberg, vbbr_local_R=q, vbbr_local_S=q)
+
+    grid_csv_path: Path | None = None
+    if args.grid_ne_gap_csv is not None:
+        grid_csv_path = _resolve_existing_path(str(args.grid_ne_gap_csv))
+        heatmap_pE_grid, heatmap_pN_grid, heatmap_grid_ne_gap = _load_grid_ne_gap_surface(grid_csv_path)
+    else:
+        heatmap_pE_grid = np.asarray([], dtype=float)
+        heatmap_pN_grid = np.asarray([], dtype=float)
+        heatmap_grid_ne_gap = np.asarray([[]], dtype=float)
+
+    q_list = [int(x) for x in args.q_list.split(",") if x.strip()]
+    csv_path = out_dir / "F1_q_sensitivity.csv"
+    rows = _f1_rows_from_csv(csv_path)
+    completed = {(int(row["Q"]), int(row["trial"])) for row in rows}
+    total_points = len(q_list) * int(args.trials)
+    if rows:
+        _write_f1_outputs(
+            out_dir=out_dir,
+            rows=rows,
+            cfg=cfg,
+            config_path=args.config,
+            seed=args.seed,
+            n_users=args.n_users,
+            q_list=q_list,
+            trials=args.trials,
+            plot_mode=args.plot_mode,
+            grid_csv_path=grid_csv_path,
+            completed_points=len(completed),
+            total_points=total_points,
+        )
+
+    for q in q_list:
+        if str(cfg.stackelberg.stage1_solver_variant) == "paper_iterative_pricing":
+            stack_cfg = replace(cfg.stackelberg, paper_local_Q=q)
+        else:
+            stack_cfg = replace(cfg.stackelberg, vbbr_local_R=q, vbbr_local_S=q)
         for trial in range(1, args.trials + 1):
+            key = (int(q), int(trial))
+            if key in completed:
+                continue
             users = _sample_users(cfg, args.n_users, args.seed, trial)
             t0 = time.perf_counter()
             res = solve_stage1_pricing(users, cfg.system, stack_cfg)
             runtime = time.perf_counter() - t0
             candidate_sizes = [int(step.candidate_family_size) for step in res.trajectory if int(step.candidate_family_size) > 0]
-            rows.append({"method": "Proposed", "Q": q, "trial": trial, "candidate_family_size": float(np.mean(candidate_sizes) if candidate_sizes else 0.0), "restricted_gap": float(res.restricted_gap), "runtime_sec": float(runtime)})
-    write_csv_rows(out_dir / "F1_q_sensitivity.csv", ["method", "Q", "trial", "candidate_family_size", "restricted_gap", "runtime_sec"], rows)
-    _plot_three_panel(rows, x_key="Q", panels=[("candidate_family_size", "Candidate-family size"), ("restricted_gap", "Final restricted gap"), ("runtime_sec", "Runtime (sec)")], xlabel="Q", title="Sensitivity to local candidate-family size Q", out_path=out_dir / "F1_q_sensitivity.png", method_order=["Proposed"])
-    _write_summary(out_dir / "F1_q_sensitivity_summary.txt", [f"config = {args.config}", f"seed = {args.seed}", f"n_users = {args.n_users}", f"q_list = {args.q_list}", f"trials = {args.trials}"])
+            if grid_csv_path is not None:
+                grid_gap = _nearest_grid_ne_gap(
+                    res.price[0],
+                    res.price[1],
+                    pE_grid=heatmap_pE_grid,
+                    pN_grid=heatmap_pN_grid,
+                    grid_ne_gap=heatmap_grid_ne_gap,
+                )
+            else:
+                grid_gap = float("nan")
+            rows.append(
+                {
+                    "method": "Proposed",
+                    "Q": int(q),
+                    "trial": int(trial),
+                    "candidate_family_size": float(np.mean(candidate_sizes) if candidate_sizes else 0.0),
+                    "restricted_gap": float(res.restricted_gap),
+                    "grid_ne_gap": float(grid_gap),
+                    "runtime_sec": float(runtime),
+                    "stage2_calls": int(res.stage2_oracle_calls),
+                    "final_pE": float(res.price[0]),
+                    "final_pN": float(res.price[1]),
+                }
+            )
+            completed.add(key)
+            _write_f1_outputs(
+                out_dir=out_dir,
+                rows=rows,
+                cfg=cfg,
+                config_path=args.config,
+                seed=args.seed,
+                n_users=args.n_users,
+                q_list=q_list,
+                trials=args.trials,
+                plot_mode=args.plot_mode,
+                grid_csv_path=grid_csv_path,
+                completed_points=len(completed),
+                total_points=total_points,
+            )
 
 
 def main_F2() -> None:
