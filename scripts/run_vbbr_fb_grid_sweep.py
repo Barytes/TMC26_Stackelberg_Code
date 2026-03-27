@@ -29,6 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.lines import Line2D
+from matplotlib import patheffects
 import numpy as np
 
 from _figure_wrapper_utils import load_csv_rows, resolve_out_dir, write_csv_rows
@@ -274,6 +275,20 @@ def _format_heatmap_cell(value: float) -> str:
     return f"{float(value):.3f}"
 
 
+def _annotation_style_for_rgba(rgba: tuple[float, float, float, float]) -> tuple[str, list[patheffects.AbstractPathEffect]]:
+    r, g, b, _ = rgba
+    luminance = 0.2126 * float(r) + 0.7152 * float(g) + 0.0722 * float(b)
+    if luminance < 0.45:
+        return (
+            "white",
+            [patheffects.withStroke(linewidth=1.35, foreground="black", alpha=0.65)],
+        )
+    return (
+        "black",
+        [patheffects.withStroke(linewidth=1.2, foreground="white", alpha=0.5)],
+    )
+
+
 def _plot_metric_heatmap(
     rows: list[dict[str, object]],
     *,
@@ -286,6 +301,8 @@ def _plot_metric_heatmap(
     cmap: str,
     language: str,
     font_scale: float = 1.25,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> None:
     with plt.rc_context():
         _configure_fonts(language, font_scale)
@@ -295,7 +312,7 @@ def _plot_metric_heatmap(
         if finite.size == 0:
             raise ValueError(f"No finite values found for heatmap metric: {y_key}")
 
-        im = ax.imshow(grid, origin="lower", aspect="auto", cmap=cmap)
+        im = ax.imshow(grid, origin="lower", aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
         ax.set_xticks(np.arange(len(x_values)))
         ax.set_xticklabels([_format_tick(value) for value in x_values])
         ax.set_yticks(np.arange(len(b_values)))
@@ -309,15 +326,14 @@ def _plot_metric_heatmap(
         ax.set_title(title)
         _style_axis_black(ax, include_x=True, include_y=True)
 
-        span = float(np.max(finite) - np.min(finite))
-        threshold = float(np.min(finite) + 0.58 * span) if span > 0.0 else float(np.min(finite))
         for b_idx in range(len(b_values)):
             for f_idx in range(len(x_values)):
                 value = float(grid[b_idx, f_idx])
                 if not np.isfinite(value):
                     continue
-                text_color = "white" if value >= threshold else "black"
-                ax.text(
+                rgba = im.cmap(im.norm(value))
+                text_color, text_effects = _annotation_style_for_rgba(rgba)
+                text = ax.text(
                     f_idx,
                     b_idx,
                     _format_heatmap_cell(value),
@@ -325,7 +341,9 @@ def _plot_metric_heatmap(
                     va="center",
                     color=text_color,
                     fontsize=10.0 * font_scale,
+                    fontweight="semibold",
                 )
+                text.set_path_effects(text_effects)
 
         cbar = fig.colorbar(im, ax=ax, pad=0.03)
         cbar.set_label(colorbar_label)
@@ -905,7 +923,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747 ESP \u5355\u4f4d\u5229\u6da6\u70ed\u56fe",
             "label_en": "ESP unit profit",
             "label_zh": "ESP\u5355\u4f4d\u5229\u6da6",
-            "cmap": "viridis",
+            "cmap": "YlGnBu",
         },
         {
             "key": "price_margin_N",
@@ -914,7 +932,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747 NSP \u5355\u4f4d\u5229\u6da6\u70ed\u56fe",
             "label_en": "NSP unit profit",
             "label_zh": "NSP\u5355\u4f4d\u5229\u6da6",
-            "cmap": "magma",
+            "cmap": "YlGnBu",
         },
         {
             "key": "comp_utilization",
@@ -923,7 +941,9 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u8ba1\u7b97\u8d44\u6e90\u5229\u7528\u7387\u70ed\u56fe",
             "label_en": "Computation utilization",
             "label_zh": "\u8ba1\u7b97\u8d44\u6e90\u5229\u7528\u7387",
-            "cmap": "YlGn",
+            "cmap": "Blues",
+            "vmin": 0.0,
+            "vmax": 1.0,
         },
         {
             "key": "band_utilization",
@@ -932,7 +952,9 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u5e26\u5bbd\u5229\u7528\u7387\u70ed\u56fe",
             "label_en": "Bandwidth utilization",
             "label_zh": "\u5e26\u5bbd\u5229\u7528\u7387",
-            "cmap": "YlOrRd",
+            "cmap": "Blues",
+            "vmin": 0.0,
+            "vmax": 1.0,
         },
         {
             "key": "offloading_ratio",
@@ -941,7 +963,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u5378\u8f7d\u6bd4\u4f8b\u70ed\u56fe",
             "label_en": "Offloading ratio",
             "label_zh": "\u5378\u8f7d\u6bd4\u4f8b",
-            "cmap": "PuBu",
+            "cmap": "YlGnBu",
         },
         {
             "key": "offloading_size",
@@ -950,7 +972,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u5378\u8f7d\u7528\u6237\u6570\u70ed\u56fe",
             "label_en": "Number of offloading users",
             "label_zh": "\u5378\u8f7d\u7528\u6237\u6570",
-            "cmap": "BuPu",
+            "cmap": "YlGnBu",
         },
         {
             "key": "social_cost",
@@ -959,7 +981,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u793e\u4f1a\u6210\u672c\u70ed\u56fe",
             "label_en": "Total user social cost",
             "label_zh": "\u7528\u6237\u603b\u793e\u4f1a\u6210\u672c",
-            "cmap": "cividis",
+            "cmap": "RdYlBu_r",
         },
         {
             "key": "joint_revenue",
@@ -968,7 +990,7 @@ def main() -> None:
             "title_zh": "\u5e73\u5747\u8054\u5408\u6536\u76ca\u70ed\u56fe",
             "label_en": "Joint provider revenue",
             "label_zh": "\u8054\u5408\u670d\u52a1\u5546\u6536\u76ca",
-            "cmap": "plasma",
+            "cmap": "YlGnBu",
         },
     ]
     for spec in heatmap_specs:
@@ -982,6 +1004,8 @@ def main() -> None:
             y_key=str(spec["key"]),
             cmap=str(spec["cmap"]),
             language="en",
+            vmin=(float(spec["vmin"]) if "vmin" in spec else None),
+            vmax=(float(spec["vmax"]) if "vmax" in spec else None),
         )
         _plot_metric_heatmap(
             rows,
@@ -993,6 +1017,8 @@ def main() -> None:
             y_key=str(spec["key"]),
             cmap=str(spec["cmap"]),
             language="zh",
+            vmin=(float(spec["vmin"]) if "vmin" in spec else None),
+            vmax=(float(spec["vmax"]) if "vmax" in spec else None),
         )
 
     if metrics_csv is None and runtime_total_sec is not None:
