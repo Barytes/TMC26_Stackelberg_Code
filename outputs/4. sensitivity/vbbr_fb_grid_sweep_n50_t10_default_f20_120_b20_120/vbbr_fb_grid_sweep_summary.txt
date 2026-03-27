@@ -1,0 +1,15 @@
+config = configs/default.toml
+n_users = 50
+seed = 2026
+trials = 10
+scan_mode = direct_F_B_grid
+F_list = 20,40,60,80,100,120
+B_list = 20,40,60,80,100,120
+target_grid_points = 36
+expected_rows = 360
+rows = 360
+runtime_sec = 711.4532138
+same_user_realization_across_grid_within_trial = true
+reused_rows = 60
+new_rows = 300
+reuse_metrics_csv = outputs\4. sensitivity\vbbr_fb_grid_sweep_n50_t10_default\vbbr_fb_grid_sweep_metrics.csv

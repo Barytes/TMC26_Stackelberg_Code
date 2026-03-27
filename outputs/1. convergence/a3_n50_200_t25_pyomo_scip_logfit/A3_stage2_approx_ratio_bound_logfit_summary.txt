@@ -1,8 +1,10 @@
-source_csv = outputs/a3_n50_200_t25_pyomo_scip_incremental/A3_stage2_approx_ratio_bound.csv
-transform = s(B) = log(B / empirical ratio)
-fit_model = s(B) = a + b ln B
+source_csv = outputs/1. convergence/a3_n50_200_t25_pyomo_scip_logfit/A3_stage2_approx_ratio_bound.csv
+transform = s(B_theo) = log(B_theo / empirical ratio)
+fit_model = s(B_theo) = a + b ln B_theo
 a = -0.0358250950444
 b = 0.9249110867
-equation = s(B) = -0.0358251 + 0.924911 ln B
+equation = s(B_theo) = -0.0358251 + 0.924911 ln B_theo
 r_squared = 0.995357971279
 valid_rows_used = 99
+legend_loc = upper left
+font_scale = 1.25

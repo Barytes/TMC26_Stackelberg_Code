@@ -679,7 +679,7 @@ def main() -> None:
         methods=method_order,
         metric="joint_revenue",
         statistic="median_iqr",
-        ylabel="Joint provider revenue",
+        ylabel="Joint revenue",
         title="Budget-matched joint revenue vs. number of users",
     )
     quality.plot_stage2_calls_broken_axis(

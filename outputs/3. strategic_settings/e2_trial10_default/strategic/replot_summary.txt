@@ -1,0 +1,17 @@
+source_csv = C:\Users\a1831\Desktop\TMC26_Stackelberg_Code\outputs\3. strategic_settings\e2_trial10_default\E2_provider_revenue_compare.csv
+rows = 250
+methods = Coop,Full model,ME,Rand,SingleSP
+n_users = 20,40,60,80,100
+legend_alias_full_model = Stackelberg
+language = zh
+legend_language = en
+filename_suffix = _zh
+font_scale = 1.55
+plot_style = line_plot_with_error_band
+error_band = mean_plus_minus_std
+x_ticks = 20,40,60,80,100
+x_limits = 16.0,104.0
+artifacts = user_social_cost_compare_zh.png
+config = C:\Users\a1831\Desktop\TMC26_Stackelberg_Code\configs\default.toml
+system_F = 100.0
+system_B = 40.0

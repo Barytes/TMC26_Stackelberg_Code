@@ -374,10 +374,10 @@ def _configure_multilang_font_support() -> None:
 def _stage2_trace_labels(lang: str) -> dict[str, str]:
     if lang == "zh":
         return {
-            "title": "\u7b97\u6cd52\u7684\u6536\u655b\u6027",
+            "title": "\u7b97\u6cd54.2\u7684\u6536\u655b\u6027",
             "xlabel": "\u8fed\u4ee3\u6b21\u6570",
             "ylabel": "\u793e\u4f1a\u6210\u672c",
-            "alg2_prefix": "\u7b97\u6cd52",
+            "alg2_prefix": "\u7b97\u6cd54.2",
             "cs_prefix": "\u96c6\u4e2d\u5f0f\u6700\u4f18",
         }
     if lang == "bilingual":
@@ -407,44 +407,60 @@ def _plot_A1_multiscale_trace(
     title: str | None,
     xlabel: str | None,
     ylabel: str | None,
+    font_scale: float = 1.0,
 ) -> None:
-    _configure_multilang_font_support()
-    labels = _stage2_trace_labels(lang)
-    fig, ax = plt.subplots(figsize=(9, 5.5), dpi=140)
-    cmap = plt.get_cmap("tab10")
-    ns = sorted(traces_by_n.keys())
-    for idx, n in enumerate(ns):
-        color = cmap(idx % 10)
-        trace = traces_by_n[n]
-        if max_iter_plot is not None:
-            trace = trace[:max_iter_plot]
-        x = np.arange(1, len(trace) + 1, dtype=int)
-        ax.plot(
-            x,
-            np.asarray(trace, dtype=float),
-            marker="o",
-            linewidth=1.8,
-            color=color,
-            label=f"{labels['alg2_prefix']} n={n}",
-        )
-        cs_val = centralized_by_n.get(n)
-        if cs_val is not None:
-            ax.axhline(
-                y=float(cs_val),
+    with plt.rc_context():
+        _configure_multilang_font_support()
+        plt.rcParams["font.size"] = 12.5 * font_scale
+        plt.rcParams["axes.titlesize"] = 16.5 * font_scale
+        plt.rcParams["axes.labelsize"] = 14.5 * font_scale
+        plt.rcParams["xtick.labelsize"] = 12.2 * font_scale
+        plt.rcParams["ytick.labelsize"] = 12.2 * font_scale
+        plt.rcParams["legend.fontsize"] = 11.0 * font_scale
+        labels = _stage2_trace_labels(lang)
+        fig, ax = plt.subplots(figsize=(9, 5.5), dpi=140)
+        cmap = plt.get_cmap("tab10")
+        ns = sorted(traces_by_n.keys())
+        for idx, n in enumerate(ns):
+            color = cmap(idx % 10)
+            trace = traces_by_n[n]
+            if max_iter_plot is not None:
+                trace = trace[:max_iter_plot]
+            x = np.arange(1, len(trace) + 1, dtype=int)
+            ax.plot(
+                x,
+                np.asarray(trace, dtype=float),
+                marker="o",
+                linewidth=1.8,
                 color=color,
-                linestyle="--",
-                linewidth=1.6,
-                alpha=0.85,
-                label=f"{labels['cs_prefix']} n={n}",
+                label=f"{labels['alg2_prefix']} n={n}",
             )
-    ax.set_xlabel(xlabel or labels["xlabel"])
-    ax.set_ylabel(ylabel or labels["ylabel"])
-    ax.set_title(title or labels["title"])
-    ax.grid(alpha=0.25)
-    ax.legend(ncol=2, fontsize=9)
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
+            cs_val = centralized_by_n.get(n)
+            if cs_val is not None:
+                ax.axhline(
+                    y=float(cs_val),
+                    color=color,
+                    linestyle="--",
+                    linewidth=1.6,
+                    alpha=0.85,
+                    label=f"{labels['cs_prefix']} n={n}",
+                )
+        ax.set_xlabel(xlabel or labels["xlabel"])
+        ax.set_ylabel(ylabel or labels["ylabel"])
+        ax.set_title(title or labels["title"])
+        ax.grid(alpha=0.25)
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.01, 0.5),
+            ncol=1,
+            fontsize=float(plt.rcParams["legend.fontsize"]) * 0.96,
+            frameon=True,
+            columnspacing=1.0,
+            handlelength=2.0,
+        )
+        fig.subplots_adjust(right=0.78 if lang == "en" else 0.70)
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
+        plt.close(fig)
 
 
 def _flush_A3_progress(
@@ -501,6 +517,7 @@ def main_A1() -> None:
     parser.add_argument("--title", type=str, default=None)
     parser.add_argument("--xlabel", type=str, default=None)
     parser.add_argument("--ylabel", type=str, default=None)
+    parser.add_argument("--font-scale", type=float, default=1.0)
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
 
@@ -530,6 +547,7 @@ def main_A1() -> None:
         title=args.title,
         xlabel=args.xlabel,
         ylabel=args.ylabel,
+        font_scale=float(args.font_scale),
     )
     _plot_A1_multiscale_trace(
         traces_by_n=traces_by_n,
@@ -540,6 +558,7 @@ def main_A1() -> None:
         title=args.title,
         xlabel=args.xlabel,
         ylabel=args.ylabel,
+        font_scale=float(args.font_scale),
     )
     write_csv_rows(
         out_dir / "A1_stage2_social_cost_trace.csv",
@@ -552,6 +571,7 @@ def main_A1() -> None:
             f"secondary_lang = {secondary_lang}",
             f"secondary_image = A1_stage2_social_cost_trace_{secondary_lang}.png",
             f"max_iter_plot = {'' if args.max_iter_plot is None else int(args.max_iter_plot)}",
+            f"font_scale = {float(args.font_scale):.4g}",
         ]
     )
     _write_summary(out_dir / "A1_stage2_social_cost_trace_summary.txt", summary_lines)

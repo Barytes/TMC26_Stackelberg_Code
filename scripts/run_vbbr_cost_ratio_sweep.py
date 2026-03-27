@@ -87,7 +87,7 @@ def _add_base_ratio_marker(ax: plt.Axes, base_ratio: float) -> None:
     ax.axvline(base_ratio, color="0.35", linestyle="--", linewidth=1.1, alpha=0.8)
 
 
-def _configure_fonts(language: str) -> None:
+def _configure_fonts(language: str, font_scale: float) -> None:
     if language == "zh":
         candidates = [
             "Microsoft YaHei",
@@ -101,7 +101,29 @@ def _configure_fonts(language: str) -> None:
         if chosen:
             existing = list(plt.rcParams.get("font.sans-serif", []))
             plt.rcParams["font.sans-serif"] = chosen + [name for name in existing if name not in chosen]
+    else:
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["font.size"] = 13.5 * font_scale
+    plt.rcParams["axes.titlesize"] = 17.0 * font_scale
+    plt.rcParams["axes.labelsize"] = 15.0 * font_scale
+    plt.rcParams["xtick.labelsize"] = 12.8 * font_scale
+    plt.rcParams["ytick.labelsize"] = 12.8 * font_scale
+    plt.rcParams["legend.fontsize"] = 12.0 * font_scale
+    plt.rcParams["axes.linewidth"] = 1.25
+    plt.rcParams["xtick.major.width"] = 1.1
+    plt.rcParams["ytick.major.width"] = 1.1
+
+
+def _style_axis_black(ax: plt.Axes, *, include_x: bool = True, include_y: bool = True) -> None:
+    if include_x:
+        ax.xaxis.label.set_color("black")
+        ax.tick_params(axis="x", colors="black")
+    if include_y:
+        ax.yaxis.label.set_color("black")
+        ax.tick_params(axis="y", colors="black")
+    for spine in ax.spines.values():
+        spine.set_color("black")
 
 
 def _plot_metric_with_band(
@@ -115,11 +137,27 @@ def _plot_metric_with_band(
     linestyle: str = "-",
     zorder: float = 2.0,
     markerfacecolor: str | None = None,
+    band_mode: str = "std",
 ) -> bool:
     stats = _series_stats(rows, x_key="ratio", y_key=y_key)
     x = np.asarray([item[0] for item in stats], dtype=float)
     y = np.asarray([item[1] for item in stats], dtype=float)
     e = np.asarray([item[2] for item in stats], dtype=float)
+    if band_mode == "sem":
+        counts = np.asarray(
+            [
+                sum(
+                    1
+                    for row in rows
+                    if float(row["ratio"]) == float(x_val) and np.isfinite(float(row[y_key]))
+                )
+                for x_val in x
+            ],
+            dtype=float,
+        )
+        e = np.where(counts > 0.0, e / np.sqrt(counts), 0.0)
+    elif band_mode != "std":
+        raise ValueError(f"Unsupported band_mode: {band_mode}")
     if np.all(~np.isfinite(y)):
         return False
     ax.plot(
@@ -150,28 +188,33 @@ def _plot_multi_series(
     base_ratio: float,
     xscale: str,
     y_specs: list[tuple[str, str, str, str]],
+    xlabel: str = r"cost ratio $c_E/c_N$",
+    language: str = "en",
+    font_scale: float = 1.0,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(8.8, 5.4), dpi=160)
-    for y_key, label, color, marker in y_specs:
-        stats = _series_stats(rows, x_key="ratio", y_key=y_key)
-        x = np.asarray([item[0] for item in stats], dtype=float)
-        y = np.asarray([item[1] for item in stats], dtype=float)
-        e = np.asarray([item[2] for item in stats], dtype=float)
-        if np.all(~np.isfinite(y)):
-            continue
-        ax.plot(x, y, color=color, marker=marker, linewidth=2.0, markersize=5.8, label=label)
-        if np.any(np.isfinite(e) & (e > 0.0)):
-            ax.fill_between(x, y - e, y + e, color=color, alpha=0.14)
-    _add_base_ratio_marker(ax, base_ratio)
-    ax.set_xscale(xscale)
-    ax.set_xlabel("Provider cost ratio cE/cN")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.grid(alpha=0.25)
-    ax.legend(loc="best", fontsize=9)
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
+    with plt.rc_context():
+        _configure_fonts(language, font_scale)
+        fig, ax = plt.subplots(figsize=(9.6, 6.2), dpi=180)
+        for y_key, label, color, marker in y_specs:
+            stats = _series_stats(rows, x_key="ratio", y_key=y_key)
+            x = np.asarray([item[0] for item in stats], dtype=float)
+            y = np.asarray([item[1] for item in stats], dtype=float)
+            e = np.asarray([item[2] for item in stats], dtype=float)
+            if np.all(~np.isfinite(y)):
+                continue
+            ax.plot(x, y, color=color, marker=marker, linewidth=2.0, markersize=6.0, label=label)
+            if np.any(np.isfinite(e) & (e > 0.0)):
+                ax.fill_between(x, y - e, y + e, color=color, alpha=0.14)
+        _add_base_ratio_marker(ax, base_ratio)
+        ax.set_xscale(xscale)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout(pad=1.0)
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
+        plt.close(fig)
 
 
 def _plot_offloading_dual_axis(
@@ -185,10 +228,11 @@ def _plot_offloading_dual_axis(
     left_spec: tuple[str, str, str, str],
     right_spec: tuple[str, str, str, str],
     language: str,
+    font_scale: float = 1.0,
 ) -> None:
     with plt.rc_context():
-        _configure_fonts(language)
-        fig, ax_left = plt.subplots(figsize=(8.8, 5.4), dpi=160)
+        _configure_fonts(language, font_scale)
+        fig, ax_left = plt.subplots(figsize=(9.8, 6.4), dpi=180)
         ax_right = ax_left.twinx()
 
         left_key, left_label, left_color, left_marker = left_spec
@@ -218,11 +262,11 @@ def _plot_offloading_dual_axis(
 
         _add_base_ratio_marker(ax_left, base_ratio)
         ax_left.set_xscale(xscale)
-        ax_left.set_xlabel(xlabel)
-        ax_left.set_ylabel(left_label, color=left_color)
-        ax_right.set_ylabel(right_label, color=right_color)
-        ax_left.tick_params(axis="y", labelcolor=left_color)
-        ax_right.tick_params(axis="y", labelcolor=right_color)
+        ax_left.set_xlabel(xlabel, color="black")
+        ax_left.set_ylabel(left_label, color="black")
+        ax_right.set_ylabel(right_label, color="black")
+        _style_axis_black(ax_left, include_x=True, include_y=True)
+        _style_axis_black(ax_right, include_x=False, include_y=True)
         left_stats = _series_stats(rows, x_key="ratio", y_key=left_key)
         right_stats = _series_stats(rows, x_key="ratio", y_key=right_key)
         left_vals = np.asarray([item[1] for item in left_stats], dtype=float)
@@ -243,9 +287,9 @@ def _plot_offloading_dual_axis(
         handles_left, labels_left = ax_left.get_legend_handles_labels()
         handles_right, labels_right = ax_right.get_legend_handles_labels()
         if left_drawn or right_drawn:
-            ax_left.legend(handles_left + handles_right, labels_left + labels_right, loc="best", fontsize=9)
-        fig.tight_layout()
-        fig.savefig(out_path)
+            ax_left.legend(handles_left + handles_right, labels_left + labels_right, loc="best")
+        fig.tight_layout(pad=1.0)
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
         plt.close(fig)
 
 
@@ -279,6 +323,108 @@ def _plot_single_metric_panels(
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
+
+
+def _set_metric_axis_limits(ax: plt.Axes, stats: list[tuple[float, float, float]]) -> None:
+    values = np.asarray([item[1] for item in stats], dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return
+    y_min = float(np.min(finite))
+    y_max = float(np.max(finite))
+    if np.isclose(y_min, y_max):
+        pad = max(abs(y_max) * 0.12, 1.0)
+        lower = y_min - pad
+        upper = y_max + pad
+    else:
+        span = y_max - y_min
+        lower = y_min - 0.18 * span
+        upper = y_max + 0.18 * span
+    if lower >= 0.0:
+        lower = max(0.0, lower)
+    ax.set_ylim(lower, upper)
+
+
+def _plot_welfare_revenue_dual_axis(
+    rows: list[dict[str, object]],
+    *,
+    out_path: Path,
+    title: str,
+    xlabel: str,
+    base_ratio: float,
+    xscale: str,
+    left_spec: tuple[str, str, str, str],
+    right_spec: tuple[str, str, str, str],
+    language: str,
+    font_scale: float = 1.38,
+    left_band_mode: str = "std",
+    right_band_mode: str = "std",
+) -> None:
+    with plt.rc_context():
+        _configure_fonts(language, font_scale)
+        plt.rcParams["axes.labelsize"] = 15.5 * font_scale
+        plt.rcParams["legend.fontsize"] = 12.8 * font_scale
+
+        fig, ax_left = plt.subplots(figsize=(9.8, 6.4), dpi=180)
+        ax_right = ax_left.twinx()
+
+        left_key, left_label, left_color, left_marker = left_spec
+        right_key, right_label, right_color, right_marker = right_spec
+
+        left_drawn = _plot_metric_with_band(
+            ax_left,
+            rows,
+            y_key=left_key,
+            label=left_label,
+            color=left_color,
+            marker=left_marker,
+            linestyle="--",
+            zorder=4.0,
+            markerfacecolor="white",
+            band_mode=left_band_mode,
+        )
+        right_drawn = _plot_metric_with_band(
+            ax_right,
+            rows,
+            y_key=right_key,
+            label=right_label,
+            color=right_color,
+            marker=right_marker,
+            linestyle="-",
+            zorder=3.0,
+            band_mode=right_band_mode,
+        )
+
+        _add_base_ratio_marker(ax_left, base_ratio)
+        ax_left.set_xscale(xscale)
+        ax_left.set_xlabel(xlabel, color="black")
+        ax_left.set_ylabel(left_label, color="black")
+        ax_right.set_ylabel(right_label, color="black")
+        _style_axis_black(ax_left, include_x=True, include_y=True)
+        _style_axis_black(ax_right, include_x=False, include_y=True)
+
+        _set_metric_axis_limits(ax_left, _series_stats(rows, x_key="ratio", y_key=left_key))
+        _set_metric_axis_limits(ax_right, _series_stats(rows, x_key="ratio", y_key=right_key))
+
+        ax_left.set_title(title)
+        ax_left.grid(alpha=0.25)
+
+        handles_left, labels_left = ax_left.get_legend_handles_labels()
+        handles_right, labels_right = ax_right.get_legend_handles_labels()
+        if left_drawn or right_drawn:
+            ax_left.legend(
+                handles_left + handles_right,
+                labels_left + labels_right,
+                loc="center",
+                bbox_to_anchor=(0.73, 0.52),
+                ncol=1,
+                columnspacing=1.2,
+                handlelength=2.8,
+                frameon=True,
+            )
+        fig.tight_layout(pad=1.0)
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
+        plt.close(fig)
 
 
 def _write_summary(
@@ -540,19 +686,38 @@ def main() -> None:
     _plot_multi_series(
         rows,
         out_path=out_dir / "vbbr_cost_ratio_sweep_price_margins.png",
-        title="VBBR sweep: equilibrium price margins vs. cE/cN",
-        ylabel="Price margin",
+        title=r"Equilibrium unit profit vs. $c_E/c_N$",
+        xlabel=r"cost ratio $c_E/c_N$",
+        ylabel="Equilibrium unit profit",
         base_ratio=base_ratio,
         xscale=xscale,
         y_specs=[
-            ("price_margin_E", "pE* - cE", "tab:blue", "o"),
-            ("price_margin_N", "pN* - cN", "tab:orange", "s"),
+            ("price_margin_E", r"$p_E^* - c_E$", "tab:blue", "o"),
+            ("price_margin_N", r"$p_N^* - c_N$", "tab:orange", "s"),
         ],
+        language="en",
+        font_scale=1.35,
+    )
+    _plot_multi_series(
+        rows,
+        out_path=out_dir / "vbbr_cost_ratio_sweep_price_margins_zh.png",
+        title="\u5747\u8861\u5355\u4f4d\u5229\u6da6\u4e0e $c_E/c_N$ \u7684\u5173\u7cfb",
+        xlabel="\u6210\u672c\u6bd4 $c_E/c_N$",
+        ylabel="\u5747\u8861\u5355\u4f4d\u5229\u6da6",
+        base_ratio=base_ratio,
+        xscale=xscale,
+        y_specs=[
+            ("price_margin_E", r"$p_E^* - c_E$", "tab:blue", "o"),
+            ("price_margin_N", r"$p_N^* - c_N$", "tab:orange", "s"),
+        ],
+        language="zh",
+        font_scale=1.35,
     )
     _plot_multi_series(
         rows,
         out_path=out_dir / "vbbr_cost_ratio_sweep_utilization.png",
-        title="VBBR sweep: resource utilization vs. cE/cN",
+        title=r"Resource utilization vs. $c_E/c_N$",
+        xlabel=r"cost ratio $c_E/c_N$",
         ylabel="Utilization",
         base_ratio=base_ratio,
         xscale=xscale,
@@ -560,6 +725,23 @@ def main() -> None:
             ("comp_utilization", "Computation utilization", "tab:green", "o"),
             ("band_utilization", "Bandwidth utilization", "tab:red", "s"),
         ],
+        language="en",
+        font_scale=1.35,
+    )
+    _plot_multi_series(
+        rows,
+        out_path=out_dir / "vbbr_cost_ratio_sweep_utilization_zh.png",
+        title="\u8d44\u6e90\u5229\u7528\u7387\u4e0e $c_E/c_N$ \u7684\u5173\u7cfb",
+        xlabel="\u6210\u672c\u6bd4 $c_E/c_N$",
+        ylabel="\u5229\u7528\u7387",
+        base_ratio=base_ratio,
+        xscale=xscale,
+        y_specs=[
+            ("comp_utilization", "\u8ba1\u7b97\u8d44\u6e90\u5229\u7528\u7387", "tab:green", "o"),
+            ("band_utilization", "\u5e26\u5bbd\u5229\u7528\u7387", "tab:red", "s"),
+        ],
+        language="zh",
+        font_scale=1.35,
     )
     _plot_offloading_dual_axis(
         rows,
@@ -571,17 +753,19 @@ def main() -> None:
         left_spec=("offloading_ratio", "Offloading ratio", "tab:purple", "o"),
         right_spec=("offloading_size", "Number of offloading users", "tab:brown", "s"),
         language="en",
+        font_scale=1.35,
     )
     _plot_offloading_dual_axis(
         rows,
         out_path=out_dir / "vbbr_cost_ratio_sweep_offloading_zh.png",
-        title=r"用户卸载结果与 $c_E/c_N$ 的关系",
-        xlabel=r"服务提供商成本比 $c_E/c_N$",
+        title="\u7528\u6237\u5378\u8f7d\u7ed3\u679c\u4e0e $c_E/c_N$ \u7684\u5173\u7cfb",
+        xlabel="\u670d\u52a1\u63d0\u4f9b\u5546\u6210\u672c\u6bd4 $c_E/c_N$",
         base_ratio=base_ratio,
         xscale=xscale,
-        left_spec=("offloading_ratio", "卸载比例", "tab:purple", "o"),
-        right_spec=("offloading_size", "卸载用户数", "tab:brown", "s"),
+        left_spec=("offloading_ratio", "\u5378\u8f7d\u6bd4\u4f8b", "tab:purple", "o"),
+        right_spec=("offloading_size", "\u5378\u8f7d\u7528\u6237\u6570", "tab:brown", "s"),
         language="zh",
+        font_scale=1.35,
     )
     _plot_single_metric_panels(
         rows,
@@ -593,6 +777,32 @@ def main() -> None:
             ("social_cost", "Total user social cost", "tab:blue", "o"),
             ("joint_revenue", "Joint provider revenue", "tab:orange", "s"),
         ],
+    )
+    _plot_welfare_revenue_dual_axis(
+        rows,
+        out_path=out_dir / "vbbr_cost_ratio_sweep_welfare_revenue.png",
+        title="Social cost and joint revenue vs. cE/cN",
+        xlabel=r"Provider cost ratio $c_E/c_N$",
+        base_ratio=base_ratio,
+        xscale=xscale,
+        left_spec=("social_cost", "Total user social cost", "tab:blue", "o"),
+        right_spec=("joint_revenue", "Joint provider revenue", "tab:orange", "s"),
+        language="en",
+        font_scale=1.38,
+        left_band_mode="sem",
+    )
+    _plot_welfare_revenue_dual_axis(
+        rows,
+        out_path=out_dir / "vbbr_cost_ratio_sweep_welfare_revenue_zh.png",
+        title="\u793e\u4f1a\u6210\u672c\u4e0e\u8054\u5408\u6536\u76ca\u968f $c_E/c_N$ \u7684\u53d8\u5316",
+        xlabel="\u670d\u52a1\u63d0\u4f9b\u5546\u6210\u672c\u6bd4 $c_E/c_N$",
+        base_ratio=base_ratio,
+        xscale=xscale,
+        left_spec=("social_cost", "\u7528\u6237\u603b\u793e\u4f1a\u6210\u672c", "tab:blue", "o"),
+        right_spec=("joint_revenue", "\u8054\u5408\u670d\u52a1\u5546\u6536\u76ca", "tab:orange", "s"),
+        language="zh",
+        font_scale=1.38,
+        left_band_mode="sem",
     )
 
     if metrics_csv is None and runtime_total_sec is not None:

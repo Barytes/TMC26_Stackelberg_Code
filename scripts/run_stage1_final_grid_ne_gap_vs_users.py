@@ -27,6 +27,7 @@ os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import font_manager
 from matplotlib.lines import Line2D
 
 from _figure_missing_impl import (
@@ -77,6 +78,34 @@ METHOD_COLORS = {
     "BO-online": "tab:purple",
     "MARL": "tab:green",
 }
+
+
+def _configure_fonts(language: str, font_scale: float) -> None:
+    if language == "zh":
+        candidates = [
+            "Microsoft YaHei",
+            "SimHei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "Arial Unicode MS",
+        ]
+        available = {entry.name for entry in font_manager.fontManager.ttflist}
+        chosen = [name for name in candidates if name in available]
+        if chosen:
+            existing = list(plt.rcParams.get("font.sans-serif", []))
+            plt.rcParams["font.sans-serif"] = chosen + [name for name in existing if name not in chosen]
+    else:
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["font.size"] = 13.5 * font_scale
+    plt.rcParams["axes.titlesize"] = 17.0 * font_scale
+    plt.rcParams["axes.labelsize"] = 15.0 * font_scale
+    plt.rcParams["xtick.labelsize"] = 12.8 * font_scale
+    plt.rcParams["ytick.labelsize"] = 12.8 * font_scale
+    plt.rcParams["legend.fontsize"] = 12.0 * font_scale
+    plt.rcParams["axes.linewidth"] = 1.25
+    plt.rcParams["xtick.major.width"] = 1.1
+    plt.rcParams["ytick.major.width"] = 1.1
 
 METHOD_MARKERS = {
     "Proposed": "o",
@@ -833,25 +862,44 @@ def plot_metric_summary(
     ylabel: str,
     title: str,
     logy: bool = False,
+    xlabel: str = "Number of users",
+    show_legend: bool = True,
+    language: str = "en",
+    font_scale: float = 1.0,
+    method_label_overrides: dict[str, str] | None = None,
+    legend_loc: str = "best",
+    legend_bbox_to_anchor: tuple[float, float] | None = None,
+    legend_fontsize: float | None = None,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(8.8, 5.6), dpi=150)
-    for method in methods:
-        xs, center, low, high = _extract_metric_series(summary_rows, method=method, metric=metric, statistic=statistic)
-        if xs.size == 0:
-            continue
-        color = METHOD_COLORS.get(method)
-        ax.plot(xs, center, marker="o", linewidth=1.8, label=method, color=color)
-        ax.fill_between(xs, low, high, alpha=0.18, color=color)
-    if logy:
-        ax.set_yscale("log")
-    ax.set_xlabel("Number of users")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.grid(True, alpha=0.25)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_path)
-    plt.close(fig)
+    with plt.rc_context():
+        _configure_fonts(language, font_scale)
+        method_label_overrides = method_label_overrides or {}
+        fig, ax = plt.subplots(figsize=(9.4, 6.0), dpi=180)
+        for method in methods:
+            xs, center, low, high = _extract_metric_series(summary_rows, method=method, metric=metric, statistic=statistic)
+            if xs.size == 0:
+                continue
+            color = METHOD_COLORS.get(method)
+            ax.plot(xs, center, marker="o", linewidth=1.9, markersize=6.0, label=method_label_overrides.get(method, method), color=color)
+            ax.fill_between(xs, low, high, alpha=0.18, color=color)
+        if logy:
+            ax.set_yscale("log")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.grid(True, alpha=0.25)
+        if show_legend:
+            legend_kwargs: dict[str, object] = {
+                "loc": legend_loc,
+            }
+            if legend_bbox_to_anchor is not None:
+                legend_kwargs["bbox_to_anchor"] = legend_bbox_to_anchor
+            if legend_fontsize is not None:
+                legend_kwargs["fontsize"] = legend_fontsize
+            ax.legend(**legend_kwargs)
+        fig.tight_layout(pad=1.0)
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
+        plt.close(fig)
 
 
 def plot_gap_summary(
@@ -878,100 +926,135 @@ def plot_stage2_calls_broken_axis(
     *,
     methods: list[str],
     statistic: str,
+    title: str = "Stage-II solver calls vs. number of users",
+    xlabel: str = "Number of users",
+    ylabel: str = "Stage-II solver calls",
+    language: str = "en",
+    font_scale: float = 1.0,
+    method_label_overrides: dict[str, str] | None = None,
+    legend_loc: str = "upper right",
+    legend_bbox_to_anchor: tuple[float, float] = (0.98, 0.53),
+    legend_fontsize: float | None = None,
+    ylabel_fontsize: float | None = None,
+    ytick_label_scale: float = 1.0,
 ) -> None:
-    method_centers: list[tuple[str, float]] = []
-    series_by_method: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
-    for method in methods:
-        xs, center, low, high = _extract_metric_series(summary_rows, method=method, metric="stage2_solver_calls", statistic=statistic)
-        if xs.size == 0:
-            continue
-        series_by_method[method] = (xs, center, low, high)
-        finite_center = center[np.isfinite(center) & (center > 0)]
-        if finite_center.size:
-            method_centers.append((method, float(np.median(finite_center))))
-    if len(method_centers) < 2:
-        plot_metric_summary(
-            summary_rows,
-            out_path,
-            methods=methods,
-            metric="stage2_solver_calls",
-            statistic=statistic,
-            ylabel="Stage-II solver calls",
-            title="Stage-II solver calls vs. number of users",
+    with plt.rc_context():
+        _configure_fonts(language, font_scale)
+        method_label_overrides = method_label_overrides or {}
+        method_centers: list[tuple[str, float]] = []
+        series_by_method: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+        for method in methods:
+            xs, center, low, high = _extract_metric_series(summary_rows, method=method, metric="stage2_solver_calls", statistic=statistic)
+            if xs.size == 0:
+                continue
+            series_by_method[method] = (xs, center, low, high)
+            finite_center = center[np.isfinite(center) & (center > 0)]
+            if finite_center.size:
+                method_centers.append((method, float(np.median(finite_center))))
+        if len(method_centers) < 2:
+            plot_metric_summary(
+                summary_rows,
+                out_path,
+                methods=methods,
+                metric="stage2_solver_calls",
+                statistic=statistic,
+                ylabel=ylabel,
+                title=title,
+                xlabel=xlabel,
+                language=language,
+                font_scale=font_scale,
+                method_label_overrides=method_label_overrides,
+            )
+            return
+
+        ordered = sorted(method_centers, key=lambda item: item[1])
+        ratios = [ordered[i + 1][1] / max(ordered[i][1], 1e-12) for i in range(len(ordered) - 1)]
+        split_idx = int(np.argmax(ratios))
+        if ratios[split_idx] < 3.0:
+            plot_metric_summary(
+                summary_rows,
+                out_path,
+                methods=methods,
+                metric="stage2_solver_calls",
+                statistic=statistic,
+                ylabel=ylabel,
+                title=title,
+                xlabel=xlabel,
+                logy=True,
+                language=language,
+                font_scale=font_scale,
+                method_label_overrides=method_label_overrides,
+            )
+            return
+
+        low_methods = {method for method, _ in ordered[: split_idx + 1]}
+        high_methods = {method for method, _ in ordered[split_idx + 1 :]}
+        low_highs = np.asarray(
+            [float(np.nanmax(series_by_method[m][3])) for m in low_methods if m in series_by_method],
+            dtype=float,
         )
-        return
-
-    ordered = sorted(method_centers, key=lambda item: item[1])
-    ratios = [ordered[i + 1][1] / max(ordered[i][1], 1e-12) for i in range(len(ordered) - 1)]
-    split_idx = int(np.argmax(ratios))
-    if ratios[split_idx] < 3.0:
-        plot_metric_summary(
-            summary_rows,
-            out_path,
-            methods=methods,
-            metric="stage2_solver_calls",
-            statistic=statistic,
-            ylabel="Stage-II solver calls",
-            title="Stage-II solver calls vs. number of users",
-            logy=True,
+        high_lows = np.asarray(
+            [float(np.nanmin(series_by_method[m][2])) for m in high_methods if m in series_by_method],
+            dtype=float,
         )
-        return
+        low_cap = float(np.nanmax(low_highs)) if low_highs.size else 1.0
+        high_floor = float(np.nanmin(high_lows)) if high_lows.size else low_cap * 3.0
+        low_ylim_top = max(low_cap * 1.12, 1.0)
+        high_ylim_bottom = max(high_floor * 0.92, low_ylim_top * 1.4)
 
-    low_methods = {method for method, _ in ordered[: split_idx + 1]}
-    high_methods = {method for method, _ in ordered[split_idx + 1 :]}
-    low_highs = np.asarray(
-        [float(np.nanmax(series_by_method[m][3])) for m in low_methods if m in series_by_method],
-        dtype=float,
-    )
-    high_lows = np.asarray(
-        [float(np.nanmin(series_by_method[m][2])) for m in high_methods if m in series_by_method],
-        dtype=float,
-    )
-    low_cap = float(np.nanmax(low_highs)) if low_highs.size else 1.0
-    high_floor = float(np.nanmin(high_lows)) if high_lows.size else low_cap * 3.0
-    low_ylim_top = max(low_cap * 1.12, 1.0)
-    high_ylim_bottom = max(high_floor * 0.92, low_ylim_top * 1.4)
+        fig, (ax_top, ax_bottom) = plt.subplots(
+            2,
+            1,
+            sharex=True,
+            figsize=(8.8, 6.6),
+            dpi=150,
+            gridspec_kw={"height_ratios": [2.2, 1.3], "hspace": 0.05},
+        )
+        for method in methods:
+            if method not in series_by_method:
+                continue
+            xs, center, low, high = series_by_method[method]
+            color = METHOD_COLORS.get(method)
+            for ax in (ax_top, ax_bottom):
+                ax.plot(xs, center, marker="o", linewidth=1.8, label=method_label_overrides.get(method, method), color=color)
+                ax.fill_between(xs, low, high, alpha=0.18, color=color)
 
-    fig, (ax_top, ax_bottom) = plt.subplots(
-        2,
-        1,
-        sharex=True,
-        figsize=(8.8, 6.6),
-        dpi=150,
-        gridspec_kw={"height_ratios": [2.2, 1.3], "hspace": 0.05},
-    )
-    for method in methods:
-        if method not in series_by_method:
-            continue
-        xs, center, low, high = series_by_method[method]
-        color = METHOD_COLORS.get(method)
+        ax_top.set_ylim(high_ylim_bottom, max(float(np.nanmax([np.nanmax(v[3]) for v in series_by_method.values()])), high_ylim_bottom) * 1.05)
+        ax_bottom.set_ylim(0.0, low_ylim_top)
+        ax_top.spines["bottom"].set_visible(False)
+        ax_bottom.spines["top"].set_visible(False)
+        ax_top.tick_params(labeltop=False, bottom=False)
+        ax_bottom.xaxis.tick_bottom()
+        if ytick_label_scale != 1.0:
+            ytick_size = float(plt.rcParams["ytick.labelsize"]) * float(ytick_label_scale)
+            ax_top.tick_params(axis="y", labelsize=ytick_size)
+            ax_bottom.tick_params(axis="y", labelsize=ytick_size)
         for ax in (ax_top, ax_bottom):
-            ax.plot(xs, center, marker="o", linewidth=1.8, label=method, color=color)
-            ax.fill_between(xs, low, high, alpha=0.18, color=color)
-
-    ax_top.set_ylim(high_ylim_bottom, max(float(np.nanmax([np.nanmax(v[3]) for v in series_by_method.values()])), high_ylim_bottom) * 1.05)
-    ax_bottom.set_ylim(0.0, low_ylim_top)
-    ax_top.spines["bottom"].set_visible(False)
-    ax_bottom.spines["top"].set_visible(False)
-    ax_top.tick_params(labeltop=False, bottom=False)
-    ax_bottom.xaxis.tick_bottom()
-    for ax in (ax_top, ax_bottom):
-        ax.grid(True, alpha=0.25)
-    d = 0.012
-    kwargs = dict(transform=ax_top.transAxes, color="k", clip_on=False, linewidth=1.0)
-    ax_top.plot((-d, +d), (-d, +d), **kwargs)
-    ax_top.plot((1 - d, 1 + d), (-d, +d), **kwargs)
-    kwargs = dict(transform=ax_bottom.transAxes, color="k", clip_on=False, linewidth=1.0)
-    ax_bottom.plot((-d, +d), (1 - d, 1 + d), **kwargs)
-    ax_bottom.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs)
-    ax_top.set_title("Stage-II solver calls vs. number of users (broken y-axis)")
-    ax_bottom.set_xlabel("Number of users")
-    fig.supylabel("Stage-II solver calls")
-    handles, labels = ax_top.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.98, 0.53))
-    fig.tight_layout(rect=(0.04, 0.03, 0.98, 0.98))
-    fig.savefig(out_path)
-    plt.close(fig)
+            ax.grid(True, alpha=0.25)
+        d = 0.012
+        kwargs = dict(transform=ax_top.transAxes, color="k", clip_on=False, linewidth=1.0)
+        ax_top.plot((-d, +d), (-d, +d), **kwargs)
+        ax_top.plot((1 - d, 1 + d), (-d, +d), **kwargs)
+        kwargs = dict(transform=ax_bottom.transAxes, color="k", clip_on=False, linewidth=1.0)
+        ax_bottom.plot((-d, +d), (1 - d, 1 + d), **kwargs)
+        ax_bottom.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs)
+        ax_top.set_title(title)
+        ax_bottom.set_xlabel(xlabel)
+        if ylabel_fontsize is not None:
+            fig.supylabel(ylabel, fontsize=ylabel_fontsize)
+        else:
+            fig.supylabel(ylabel)
+        handles, labels = ax_top.get_legend_handles_labels()
+        legend_kwargs: dict[str, object] = {
+            "loc": legend_loc,
+            "bbox_to_anchor": legend_bbox_to_anchor,
+        }
+        if legend_fontsize is not None:
+            legend_kwargs["fontsize"] = legend_fontsize
+        fig.legend(handles, labels, **legend_kwargs)
+        fig.tight_layout(rect=(0.04, 0.03, 0.94, 0.98))
+        fig.savefig(out_path, bbox_inches="tight", pad_inches=0.06)
+        plt.close(fig)
 
 
 def compute_trial_rows(
