@@ -1,5 +1,5 @@
-csv = outputs\run_stage1_price_heatmaps_20260309_113102\price_grid_metrics.csv
-boundary_dir = outputs\boundary_price_overlays\_tmp_boundary_hypothesis_check
+csv = outputs/stage1/run_stage1_price_heatmaps_20260309_113102/price_grid_metrics.csv
+boundary_dir = outputs/stage1/boundary_price_overlays/_tmp_boundary_hypothesis_check
 config = configs/default.toml
 seed = 2026
 start_pE = 0.5

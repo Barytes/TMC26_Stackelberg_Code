@@ -85,10 +85,10 @@ def _configure_fonts(language: str) -> None:
     plt.rcParams["axes.unicode_minus"] = False
     plt.rcParams["font.size"] = 19.5
     plt.rcParams["axes.titlesize"] = 24
-    plt.rcParams["axes.labelsize"] = 21
+    plt.rcParams["axes.labelsize"] = 30
     plt.rcParams["xtick.labelsize"] = 18
     plt.rcParams["ytick.labelsize"] = 18
-    plt.rcParams["legend.fontsize"] = 18
+    plt.rcParams["legend.fontsize"] = 22
     plt.rcParams["axes.linewidth"] = 1.8
     plt.rcParams["xtick.major.width"] = 1.6
     plt.rcParams["ytick.major.width"] = 1.6
@@ -117,15 +117,14 @@ def _plot_heatmap(
         cmap=cmap,
         interpolation="nearest",
     )
-    ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     cbar = fig.colorbar(im, ax=ax, fraction=0.06, pad=0.04)
-    cbar.set_label(cbar_label)
+    cbar.set_label(cbar_label, fontsize=30)
     cbar.ax.tick_params(labelsize=16, width=1.4, length=6)
     cbar.outline.set_linewidth(1.4)
     ax.tick_params(axis="both", which="major", pad=8)
-    fig.subplots_adjust(left=0.14, right=0.88, bottom=0.13, top=0.90)
+    fig.subplots_adjust(left=0.14, right=0.88, bottom=0.13, top=0.96)
     fig.savefig(out_path, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
 
@@ -158,11 +157,10 @@ def _plot_slice(
         )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.set_title(f"{title} ({fixed_axis_label}={fixed_value:.4g})")
     ax.tick_params(axis="both", which="major", pad=8)
     legend = ax.legend(
         loc="upper right",
-        fontsize=16,
+        fontsize=22,
         frameon=True,
         framealpha=0.92,
         borderpad=0.5,
@@ -171,7 +169,7 @@ def _plot_slice(
     )
     legend.get_frame().set_linewidth(1.2)
     ax.margins(x=0.02, y=0.08)
-    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.13, top=0.90)
+    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.13, top=0.96)
     fig.savefig(out_path, bbox_inches="tight", pad_inches=0.04)
     plt.close(fig)
 
@@ -183,19 +181,19 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=str,
-        default="outputs/run_stage1_price_heatmaps_20260309_113102/price_grid_metrics.csv",
+        default="outputs/stage1/run_stage1_price_heatmaps_20260309_113102/price_grid_metrics.csv",
         help="Path to price_grid_metrics.csv.",
     )
     parser.add_argument(
         "--boundary-dir",
         type=str,
-        default="outputs/boundary_price_overlays/_tmp_boundary_hypothesis_check",
+        default="outputs/stage1/boundary_price_overlays/_tmp_boundary_hypothesis_check",
         help="Directory containing summary.txt and exact_dg_boundaries.csv.",
     )
     parser.add_argument(
         "--out-dir",
         type=str,
-        default="outputs/reprinted_stage1_figures_20260316",
+        default="outputs/stage1/reprinted_stage1_figures_20260316",
         help="Directory to store the regenerated figures.",
     )
     parser.add_argument(
