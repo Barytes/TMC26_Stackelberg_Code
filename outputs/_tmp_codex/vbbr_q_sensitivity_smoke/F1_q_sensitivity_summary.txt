@@ -1,0 +1,30 @@
+[run]
+figure_id = F1
+block = F
+script = run_figure_F1_q_sensitivity.py
+output_dir = /Users/beiyanliu/Desktop/TMC26_Stackelberg_Code/outputs/_tmp_codex/vbbr_q_sensitivity_smoke
+
+[artifacts]
+primary_image = F1_q_sensitivity.png
+primary_csv = F1_q_sensitivity.csv
+summary_file = F1_q_sensitivity_summary.txt
+
+[inputs]
+config = configs/figures/paper_base.toml
+seed = 2026
+n_users = 10
+n_trials = 1
+
+[primary_metrics]
+q_list = 1,2
+stage1_solver_variant = vbbr_brd
+q_mapping = vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget = 2Q
+plot_mode = default
+progress_completed_points = 2
+progress_total_points = 2
+progress_status = completed
+recorded_metrics = candidate_family_size,restricted_gap,grid_ne_gap,runtime_sec,stage2_calls,final_pE,final_pN
+grid_ne_gap_source = none
+
+[runtime]
+runtime_sec = 

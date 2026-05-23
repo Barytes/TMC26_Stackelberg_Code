@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-23T15:20:11",
+  "figure_id": "F1",
+  "block": "F",
+  "base_stem": "F1_q_sensitivity",
+  "script": "run_figure_F1_q_sensitivity.py",
+  "output_dir": "/Users/beiyanliu/Desktop/TMC26_Stackelberg_Code/outputs/4. sensitivity/vbbr_q_sensitivity_full_n30_t20",
+  "summary_file": "F1_q_sensitivity_summary.txt",
+  "primary_image": "F1_q_sensitivity.png",
+  "primary_csv": "F1_q_sensitivity.csv",
+  "config": "configs/figures/paper_base.toml",
+  "seed": "2026",
+  "n_users": "30",
+  "n_trials": "20",
+  "runtime_sec": "",
+  "primary_metrics": {
+    "q_list": "1,2,3,4,5,6",
+    "stage1_solver_variant": "vbbr_brd",
+    "q_mapping": "vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget = 2Q",
+    "plot_mode": "quality_runtime_calls",
+    "progress_completed_points": "120",
+    "progress_total_points": "120",
+    "progress_status": "completed",
+    "recorded_metrics": "candidate_family_size,restricted_gap,grid_ne_gap,runtime_sec,stage2_calls,final_pE,final_pN",
+    "grid_ne_gap_source": "none"
+  },
+  "detail_lines": []
+}

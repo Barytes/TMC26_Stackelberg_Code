@@ -1,0 +1,16 @@
+multi_provider_experiment = 3ESP_3NSP_extension
+n_users = 12
+num_esp = 3
+num_nsp = 3
+seed = 7
+capacity_mode = total_equal
+stage1_iters_completed = 3
+stage2_calls = 64
+runtime_sec = 0.117194084
+restricted_gap = 0.08629137409
+social_cost = 25.87818746
+offloading_count = 5
+pE = 0.325513,0.325513,0.35
+pN = 0.385,0.35,0.35
+esp_revenue = 1.50342,0,0
+nsp_revenue = 1.07875,0,1.15718

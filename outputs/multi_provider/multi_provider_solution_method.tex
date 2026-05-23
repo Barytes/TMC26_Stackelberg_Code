@@ -1,0 +1,428 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{booktabs}
+
+\title{Solution Method for the 3-ESP, 3-NSP Multi-Provider Extension}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+This document describes the solution method implemented in the multi-provider
+experiment scripts under \texttt{scripts/multi\_provider}.  The method extends
+the original ESP--NSP Stackelberg framework to a market with three edge service
+providers (ESPs), three network service providers (NSPs), and multiple users.
+It is intended as an experimental extension rather than a replacement of the
+main theoretical analysis in the paper.  The implementation follows the same
+paper-facing idea: service providers set prices in Stage I, and users respond
+in Stage II through offloading, provider-pair selection, and resource purchase
+decisions.
+
+Let
+\[
+    \mathcal E=\{1,2,3\}, \qquad \mathcal N=\{1,2,3\},
+\]
+denote the ESP and NSP sets, respectively.  Each ESP \(e\in\mathcal E\) owns
+computation capacity \(F_e\), unit cost \(c^E_e\), and price \(p^E_e\).  Each
+NSP \(n\in\mathcal N\) owns bandwidth capacity \(B_n\), unit cost \(c^N_n\),
+and price \(p^N_n\).  Each user can either compute locally or select one
+ESP--NSP pair \((e,n)\) for offloading.
+
+\section{User Cost Model}
+
+The implementation stores the user-side constants
+\[
+    a_i \triangleq \alpha_i w_i,
+    \qquad
+    \theta_{i,n}\triangleq
+    \frac{d_i(\alpha_i+\beta_i\rho_i\varpi_i)}{\sigma_{i,n}},
+\]
+where \(\sigma_{i,n}\) is the spectral efficiency from user \(i\) to NSP
+\(n\).  The local computation cost is denoted by \(C_i^\ell\).
+
+If user \(i\) offloads through pair \((e,n)\), buys computation resource
+\(f_i\), and buys bandwidth \(b_i\), its offloading cost is
+\begin{equation}
+    C^o_{i,e,n}(f_i,b_i)
+    =
+    \frac{a_i}{f_i}
+    +
+    \frac{\theta_{i,n}}{b_i}
+    +
+    p^E_e f_i
+    +
+    p^N_n b_i .
+    \label{eq:multi-provider-offload-cost}
+\end{equation}
+
+The binary assignment variables can be written as
+\[
+    x_{i,e,n}\in\{0,1\},\qquad
+    \sum_{e\in\mathcal E}\sum_{n\in\mathcal N}x_{i,e,n}\le 1.
+\]
+When \(\sum_{e,n}x_{i,e,n}=0\), user \(i\) computes locally.
+
+\section{Stage-II User Response}
+
+Given provider prices
+\[
+    \boldsymbol p=(p^E_1,p^E_2,p^E_3,p^N_1,p^N_2,p^N_3),
+\]
+the ideal Stage-II problem is a social-cost minimization over user assignment
+and resource allocation:
+\begin{align}
+    \min_{\boldsymbol x,\boldsymbol f,\boldsymbol b}\quad
+    &
+    \sum_i
+    \left(1-\sum_{e,n}x_{i,e,n}\right)C_i^\ell
+    +
+    \sum_i\sum_{e,n}x_{i,e,n}C^o_{i,e,n}(f_i,b_i)
+    \label{eq:multi-provider-scm}
+    \\
+    \text{s.t.}\quad
+    &
+    \sum_i\sum_n x_{i,e,n}f_i \le F_e,
+    \qquad \forall e\in\mathcal E,
+    \nonumber\\
+    &
+    \sum_i\sum_e x_{i,e,n}b_i \le B_n,
+    \qquad \forall n\in\mathcal N,
+    \nonumber\\
+    &
+    C^o_{i,e,n}(f_i,b_i)\le C_i^\ell,
+    \qquad \forall i,e,n \text{ with }x_{i,e,n}=1.
+    \nonumber
+\end{align}
+This mixed-integer problem is expensive because users must choose among nine
+provider pairs.  The experiment therefore uses a greedy assignment heuristic
+with exact fixed-assignment resource response.
+
+\subsection{Fixed-Assignment Closed-Form Response}
+
+Consider a fixed assignment \(A\), where \(A_i=(e_i,n_i)\) for offloading users
+and \(A_i=\emptyset\) for local users.  Let
+\[
+    \mathcal I_e(A)=\{i:A_i=(e,n)\text{ for some }n\},
+    \qquad
+    \mathcal I_n(A)=\{i:A_i=(e,n)\text{ for some }e\}.
+\]
+For each ESP and NSP, define the congestion threshold prices
+\begin{equation}
+    \bar p^E_e(A)
+    =
+    \left(
+    \frac{\sum_{i\in\mathcal I_e(A)}\sqrt{a_i}}{F_e}
+    \right)^2,
+    \qquad
+    \bar p^N_n(A)
+    =
+    \left(
+    \frac{\sum_{i\in\mathcal I_n(A)}\sqrt{\theta_{i,n}}}{B_n}
+    \right)^2 .
+    \label{eq:multi-provider-bar-prices}
+\end{equation}
+The effective prices are
+\begin{equation}
+    \tilde p^E_e(A)=\max\{p^E_e,\bar p^E_e(A)\},
+    \qquad
+    \tilde p^N_n(A)=\max\{p^N_n,\bar p^N_n(A)\}.
+    \label{eq:multi-provider-effective-prices}
+\end{equation}
+For any offloading user assigned to pair \((e,n)\), the fixed-assignment
+resource response is
+\begin{equation}
+    f_i^*(A)=\sqrt{\frac{a_i}{\tilde p^E_e(A)}},
+    \qquad
+    b_i^*(A)=\sqrt{\frac{\theta_{i,n}}{\tilde p^N_n(A)}} .
+    \label{eq:multi-provider-fixed-response}
+\end{equation}
+The corresponding capacity shadow prices are
+\begin{equation}
+    \lambda_e(A)=\tilde p^E_e(A)-p^E_e,
+    \qquad
+    \nu_n(A)=\tilde p^N_n(A)-p^N_n.
+    \label{eq:multi-provider-shadow-prices}
+\end{equation}
+The implementation uses these expressions in
+\texttt{fixed\_assignment\_response}.  They also make it cheap to evaluate the
+social cost and individual-rationality margin of an assignment:
+\begin{equation}
+    m_i(A)=C_i^\ell-C^o_{i,e_i,n_i}\bigl(f_i^*(A),b_i^*(A)\bigr).
+    \label{eq:multi-provider-margin}
+\end{equation}
+An assigned user is feasible only when \(m_i(A)\ge 0\).
+
+\subsection{Greedy Admission and Rollback}
+
+Starting from the empty offloading assignment, the Stage-II heuristic admits
+users one by one.  Given the current assignment \(A\), each currently local
+user \(j\) evaluates every ESP--NSP pair using the congestion-adjusted score
+\begin{equation}
+    h_{j,e,n}(A)
+    =
+    \min_{0<f\le F_e}
+    \left\{
+        \frac{a_j}{f}
+        +(p^E_e+\lambda_e(A))f
+    \right\}
+    +
+    \min_{0<b\le B_n}
+    \left\{
+        \frac{\theta_{j,n}}{b}
+        +(p^N_n+\nu_n(A))b
+    \right\}
+    -
+    C_j^\ell .
+    \label{eq:multi-provider-score}
+\end{equation}
+Each one-dimensional minimization has the bounded closed form
+\begin{equation}
+    \min_{0<z\le U}\left\{\frac{\xi}{z}+\tau z\right\}
+    =
+    \begin{cases}
+    2\sqrt{\xi\tau}, & \sqrt{\xi/\tau}\le U,\\[2mm]
+    \xi/U+\tau U, & \sqrt{\xi/\tau}>U.
+    \end{cases}
+    \label{eq:bounded-1d-min}
+\end{equation}
+The algorithm selects the user-pair triple with the most negative score:
+\[
+    (j^*,e^*,n^*)
+    \in
+    \arg\min_{j,e,n} h_{j,e,n}(A).
+\]
+If the minimum score is nonnegative, the algorithm stops.  Otherwise, user
+\(j^*\) is tentatively assigned to \((e^*,n^*)\), the fixed-assignment response
+is recomputed, and a rollback check is applied.  The tentative admission is
+removed if it makes the realized social cost worse or if any offloading user
+violates individual rationality.  Users that fail the rollback check are
+removed from the active candidate pool for that Stage-II solve.
+
+The Stage-II output contains the final assignment, resources, shadow prices,
+social cost, number of accepted admissions, number of rollbacks, and the social
+cost trace.
+
+\section{Provider Revenues}
+
+After the Stage-II response is computed, each provider's realized demand and
+revenue are evaluated from the assigned users:
+\begin{equation}
+    U^E_e(\boldsymbol p)
+    =
+    (p^E_e-c^E_e)
+    \sum_{i\in\mathcal I_e(A^*(\boldsymbol p))} f_i^*,
+    \qquad e\in\mathcal E,
+    \label{eq:esp-revenue}
+\end{equation}
+\begin{equation}
+    U^N_n(\boldsymbol p)
+    =
+    (p^N_n-c^N_n)
+    \sum_{i\in\mathcal I_n(A^*(\boldsymbol p))} b_i^*,
+    \qquad n\in\mathcal N.
+    \label{eq:nsp-revenue}
+\end{equation}
+Here \(A^*(\boldsymbol p)\) denotes the assignment returned by the Stage-II
+heuristic at prices \(\boldsymbol p\).
+
+\section{Stage-I Six-Provider Pricing Dynamics}
+
+The Stage-I game has six leaders: three ESPs and three NSPs.  Exhaustive
+six-dimensional price search is not practical.  The implementation therefore
+uses a boundary-price best-response heuristic inspired by the switching-boundary
+logic of the main paper.
+
+\subsection{Local Candidate Assignment Family}
+
+At a current price vector \(\boldsymbol p\), the solver first computes the
+Stage-II response \(A^*(\boldsymbol p)\).  It then constructs a local family of
+candidate assignments.  Current offloading users are sorted by increasing
+individual-rationality margin \(m_i\), so the first users are the easiest to
+remove.  Current local users are sorted by their best pair score
+\(\min_{e,n}h_{i,e,n}\), so the first users are the most likely to enter.
+
+For a small integer \(Q\), candidate assignments are created by removing the
+first \(r\) fragile offloading users and adding the first \(s\) promising local
+users, where
+\[
+    0\le r\le Q,\qquad 0\le s\le Q.
+\]
+Duplicate and empty assignments are discarded.  Hence the candidate family is
+small, with size at most \((Q+1)^2\) before duplicate removal.
+
+\subsection{Boundary Price for One Provider}
+
+For a provider \(k\), all other providers' prices are fixed.  For each local
+candidate assignment \(A\), the solver estimates the right boundary of the
+assignment's feasible price interval for provider \(k\).  This boundary is the
+first price at which one user served by provider \(k\) becomes indifferent
+between offloading and local computation:
+\begin{equation}
+    \min_{i\in\mathcal I_k(A)}
+    m_i(A;p_k,p_{-k})=0.
+    \label{eq:multi-provider-boundary-price}
+\end{equation}
+In the implementation this boundary is computed by bracketing and bisection.
+If the candidate assignment is already infeasible at the provider's cost floor,
+it is skipped.  If no zero-margin crossing is found before the configured
+maximum price, the maximum reachable price is used as the candidate boundary.
+
+For each provider \(k\), the evaluated price set contains:
+\begin{itemize}
+    \item the current price \(p_k\);
+    \item all valid boundary prices from the local assignment family;
+    \item one small upward exploratory price, \(\min\{p_k^{\max},\max(1.1p_k,p_k+0.03)\}\).
+\end{itemize}
+Each price in this finite set is evaluated by rerunning the Stage-II heuristic
+under the corresponding unilateral deviation.  The provider's estimated best
+response is the evaluated price with the largest realized revenue:
+\begin{equation}
+    \widehat p_k^{\mathrm{BR}}
+    \in
+    \arg\max_{q_k\in\widehat{\mathcal C}_k(\boldsymbol p)}
+    U_k(q_k,p_{-k}).
+    \label{eq:multi-provider-br}
+\end{equation}
+The restricted best-response gain is
+\begin{equation}
+    \widehat G_k(\boldsymbol p)
+    =
+    U_k(\widehat p_k^{\mathrm{BR}},p_{-k})-U_k(p_k,p_{-k}).
+    \label{eq:multi-provider-gain}
+\end{equation}
+
+\subsection{Iterative Pricing Rule}
+
+The restricted Nash-equilibrium gap is defined as
+\begin{equation}
+    \widehat\delta(\boldsymbol p)
+    =
+    \max_{k\in\mathcal E\cup\mathcal N}\widehat G_k(\boldsymbol p).
+    \label{eq:multi-provider-restricted-gap}
+\end{equation}
+At each Stage-I iteration, all six providers compute their estimated
+best-response gains.  If
+\[
+    \widehat\delta(\boldsymbol p)\le \varepsilon,
+\]
+the pricing dynamics terminates.  Otherwise, the implementation updates the
+single provider with the largest restricted gain:
+\[
+    k^* \in \arg\max_k \widehat G_k(\boldsymbol p),
+    \qquad
+    p_{k^*}\leftarrow \widehat p_{k^*}^{\mathrm{BR}}.
+\]
+All other provider prices remain unchanged in that iteration.  After the final
+Stage-I iteration, the solver runs Stage II one more time and reports the final
+assignment, provider revenues, restricted gap, and resource utilization.
+
+\section{Algorithm Summary}
+
+\begin{algorithm}[h]
+\caption{Multi-Provider Stage-II Heuristic}
+\begin{algorithmic}[1]
+\REQUIRE Prices \(\boldsymbol p\), capacities \(\{F_e\}\), \(\{B_n\}\)
+\STATE Initialize empty assignment \(A\) and active local-user pool.
+\REPEAT
+    \STATE Compute fixed-assignment response by
+    \eqref{eq:multi-provider-effective-prices}--\eqref{eq:multi-provider-fixed-response}.
+    \STATE Roll back the last admitted user if the realized social cost does not decrease.
+    \STATE Remove any assigned user violating \(m_i(A)\ge 0\).
+    \STATE For every active local user and every pair \((e,n)\), compute \(h_{i,e,n}(A)\).
+    \IF{the minimum score is negative}
+        \STATE Tentatively assign the corresponding user to the corresponding pair.
+    \ELSE
+        \STATE Stop.
+    \ENDIF
+\UNTIL{the active pool is empty or the iteration limit is reached}
+\STATE Recompute the final fixed-assignment response and remove infeasible users.
+\RETURN assignment, resources, shadow prices, social cost, and diagnostics.
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[h]
+\caption{Six-Provider Boundary-Price Pricing Dynamics}
+\begin{algorithmic}[1]
+\REQUIRE Initial prices \(\boldsymbol p^{(0)}\), local family size \(Q\), tolerance \(\varepsilon\)
+\FOR{\(t=0,1,\ldots,T_{\max}-1\)}
+    \STATE Run Stage II at \(\boldsymbol p^{(t)}\).
+    \FORALL{providers \(k\in\mathcal E\cup\mathcal N\)}
+        \STATE Construct the local candidate assignment family.
+        \STATE Compute candidate boundary prices using \eqref{eq:multi-provider-boundary-price}.
+        \STATE Evaluate each candidate unilateral price by rerunning Stage II.
+        \STATE Obtain \(\widehat p_k^{\mathrm{BR}}\) and \(\widehat G_k\).
+    \ENDFOR
+    \STATE Set \(\widehat\delta(\boldsymbol p^{(t)})=\max_k\widehat G_k\).
+    \IF{\(\widehat\delta(\boldsymbol p^{(t)})\le\varepsilon\)}
+        \STATE Stop.
+    \ENDIF
+    \STATE Update only the provider \(k^*\in\arg\max_k\widehat G_k\).
+\ENDFOR
+\STATE Run Stage II at the final price vector.
+\RETURN final prices, assignment, revenues, utilization, and diagnostics.
+\end{algorithmic}
+\end{algorithm}
+
+\section{Implementation Parameters Used in the Reported Runs}
+
+The reported \(N=30\) and \(N=50\) runs use the
+\texttt{code\_default\_heterogeneous} setup, which follows the numerical scale
+of the experiment code rather than the physical-unit scale in the paper text.
+The user distributions are
+\[
+\begin{array}{lll}
+w_i\sim U[0.5,2.5], & d_i\sim U[1.0,10.0], &
+f_i^\ell\sim U[0.5,1.2],\\
+\alpha_i\sim U[10.0,15.0], &
+\beta_i\sim U[0.1,0.5], &
+\rho_i\sim U[0.5,2.0],\\
+\varpi_i\sim U[0.8,1.2], &
+\kappa_i\sim U[0.01,0.05], &
+\sigma^{\mathrm{base}}_{i,n}\sim U[0.5,3.0].
+\end{array}
+\]
+The NSP channel qualities use the bias vector
+\[
+    [1.15,\;1.00,\;0.85],
+\]
+clipped to the interval \([0.5,3.0]\).  The provider parameters are
+\[
+    (F_1,F_2,F_3)=(45,35,25),
+    \qquad
+    (B_1,B_2,B_3)=(20,14,10),
+\]
+\[
+    (c^E_1,c^E_2,c^E_3)=(0.008,0.010,0.013),
+    \qquad
+    (c^N_1,c^N_2,c^N_3)=(0.007,0.010,0.014).
+\]
+The default initial prices are
+\[
+    \boldsymbol p_E^{(0)}=(0.42,0.50,0.58),
+    \qquad
+    \boldsymbol p_N^{(0)}=(0.40,0.50,0.62).
+\]
+The \(N=30\) and \(N=50\) runs used \(Q=2\), maximum price \(6.0\) for both
+resource types, ten Stage-I iterations, and ninety-six Stage-II iterations per
+Stage-II solve.
+
+\section{Remarks}
+
+The method is intentionally heuristic.  It preserves the main paper's
+boundary-price intuition, but the full 3-ESP, 3-NSP setting has a
+six-dimensional leader game and a nine-choice assignment problem on the user
+side.  Therefore, the computed outcome should be interpreted as an approximate
+multi-provider Stackelberg outcome produced by a boundary-price restricted
+best-response dynamics.  The diagnostics saved by the scripts, including
+assignment heatmaps, restricted-gap trajectories, provider revenues, and
+resource utilizations, are used to judge whether the resulting outcome is
+economically meaningful.
+
+\end{document}

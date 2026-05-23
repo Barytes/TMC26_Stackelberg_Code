@@ -1,0 +1,3 @@
+figure_id,block,method,Q,trial,candidate_family_size,restricted_gap,grid_ne_gap,runtime_sec,stage2_calls,final_pE,final_pN
+F1,F,Proposed,1,1,2.0,0.0,nan,0.000187208061106503,1,0.5,0.5
+F1,F,Proposed,2,1,3.0,0.0,nan,0.0002484159776940942,1,0.5,0.5

@@ -51,7 +51,7 @@ METRIC_SPECS = {
         "labels": {
             "en": {
                 "xlabel": "Number of users",
-                "ylabel": "Total user social cost",
+                "ylabel": "User social cost",
                 "title": "User Social Cost Comparison",
             },
             "zh": {
@@ -365,6 +365,9 @@ def _plot_single_metric(
     legend_fontsize: float | None = None,
     title_fontsize: float | None = None,
     ylabel_fontsize: float | None = None,
+    axis_label_size: float | None = None,
+    tick_label_size: float | None = None,
+    omit_title: bool = False,
     zoom_inset: dict[str, object] | None = None,
 ) -> None:
     grouped = _mean_std_by_method(rows, x_key, y_key)
@@ -404,11 +407,17 @@ def _plot_single_metric(
             linewidth=0.0,
         )
         plotted_series.append((x_plot, y_plot, e_plot, color))
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel, fontsize=ylabel_fontsize)
-    ax.set_title(title, fontsize=title_fontsize)
+    label_fontsize = axis_label_size if axis_label_size is not None else None
+    if ylabel_fontsize is not None:
+        label_fontsize = ylabel_fontsize
+    ax.set_xlabel(xlabel, fontsize=axis_label_size)
+    ax.set_ylabel(ylabel, fontsize=label_fontsize)
+    if not omit_title:
+        ax.set_title(title, fontsize=title_fontsize)
     ax.set_xticks(FIXED_X_TICKS)
     ax.set_xlim(min(FIXED_X_TICKS) - X_AXIS_MARGIN, max(FIXED_X_TICKS) + X_AXIS_MARGIN)
+    if tick_label_size is not None:
+        ax.tick_params(axis="both", labelsize=tick_label_size)
     ax.grid(alpha=0.25)
     ax.legend(loc=legend_loc, fontsize=legend_fontsize)
     if zoom_inset:
@@ -512,6 +521,16 @@ def main() -> None:
     )
     parser.add_argument("--filename-suffix", type=str, default="", help="Suffix appended before .png, e.g. _zh.")
     parser.add_argument("--font-scale", type=float, default=1.0, help="Global font scale multiplier.")
+    parser.add_argument("--omit-title", action="store_true", help="Render figures without an axes title.")
+    parser.add_argument("--axis-label-size", type=float, default=None, help="Override x/y axis label font size.")
+    parser.add_argument("--tick-label-size", type=float, default=None, help="Override x/y tick label font size.")
+    parser.add_argument("--legend-font-size", type=float, default=None, help="Override legend font size.")
+    parser.add_argument(
+        "--user-social-cost-ylabel-size",
+        type=float,
+        default=None,
+        help="Override y-axis label font size for user_social_cost_compare only.",
+    )
     parser.add_argument(
         "--only-artifacts",
         type=str,
@@ -572,6 +591,10 @@ def main() -> None:
         if metric_name == "offloading_users_compare" and args.lang == "zh":
             legend_loc = "upper left"
             legend_fontsize = base_legend_fontsize * 0.78
+        if args.legend_font_size is not None:
+            legend_fontsize = args.legend_font_size
+        if metric_name == "user_social_cost_compare" and args.user_social_cost_ylabel_size is not None:
+            ylabel_fontsize = args.user_social_cost_ylabel_size
         _plot_single_metric(
             rows,
             x_key="n_users",
@@ -588,6 +611,9 @@ def main() -> None:
             legend_fontsize=legend_fontsize,
             title_fontsize=title_fontsize,
             ylabel_fontsize=ylabel_fontsize,
+            axis_label_size=args.axis_label_size,
+            tick_label_size=args.tick_label_size,
+            omit_title=args.omit_title,
             zoom_inset=zoom_inset,
         )
         artifact_names.append(out_name)
@@ -613,6 +639,11 @@ def main() -> None:
         f"legend_language = {args.legend_language}",
         f"filename_suffix = {args.filename_suffix or '(none)'}",
         f"font_scale = {args.font_scale}",
+        f"omit_title = {args.omit_title}",
+        f"axis_label_size = {args.axis_label_size}",
+        f"tick_label_size = {args.tick_label_size}",
+        f"legend_font_size = {args.legend_font_size}",
+        f"user_social_cost_ylabel_size = {args.user_social_cost_ylabel_size}",
         "plot_style = line_plot_with_error_band",
         "error_band = mean_plus_minus_std",
         f"x_ticks = {','.join(str(x) for x in FIXED_X_TICKS)}",

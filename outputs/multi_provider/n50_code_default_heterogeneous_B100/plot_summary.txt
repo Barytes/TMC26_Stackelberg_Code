@@ -1,0 +1,1 @@
+plot_artifacts = multi_provider_assignment_heatmap.png,multi_provider_average_offloading_cost_heatmap.png,multi_provider_convergence.png,multi_provider_provider_revenue.png,multi_provider_provider_metrics.png

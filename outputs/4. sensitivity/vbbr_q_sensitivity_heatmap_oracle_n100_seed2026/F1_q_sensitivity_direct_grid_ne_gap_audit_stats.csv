@@ -1,0 +1,7 @@
+metric,value
+audit_grid_pE_points,150
+audit_grid_pN_points,150
+stage2_unique_price_pairs,1505
+total_runtime_sec,451.0700588329928
+source_q_csv,outputs/4. sensitivity/vbbr_q_sensitivity_heatmap_oracle_n100_seed2026/F1_q_sensitivity.csv
+source_heatmap_csv_for_grids_only,outputs/stage1_dg_heatmaps_default_n100_n200_20260323/n100/price_grid_metrics.csv

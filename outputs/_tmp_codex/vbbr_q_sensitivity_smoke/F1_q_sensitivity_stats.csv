@@ -1,0 +1,3 @@
+figure_id,block,Q,trials,candidate_family_size_mean,candidate_family_size_std,candidate_family_size_median,restricted_gap_mean,restricted_gap_std,restricted_gap_median,grid_ne_gap_mean,grid_ne_gap_std,grid_ne_gap_median,runtime_sec_mean,runtime_sec_std,runtime_sec_median,stage2_calls_mean,stage2_calls_std,stage2_calls_median,final_pE_mean,final_pE_std,final_pE_median,final_pN_mean,final_pN_std,final_pN_median
+F1,F,1,1,2.0,0.0,2.0,0.0,0.0,0.0,nan,nan,nan,0.000187208061106503,0.0,0.000187208061106503,1.0,0.0,1.0,0.5,0.0,0.5,0.5,0.0,0.5
+F1,F,2,1,3.0,0.0,3.0,0.0,0.0,0.0,nan,nan,nan,0.0002484159776940942,0.0,0.0002484159776940942,1.0,0.0,1.0,0.5,0.0,0.5,0.5,0.0,0.5

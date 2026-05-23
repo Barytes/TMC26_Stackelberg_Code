@@ -1,0 +1,69 @@
+{
+  "n_users": 30,
+  "num_esp": 3,
+  "num_nsp": 3,
+  "seed": 2026,
+  "setup": "code_default_heterogeneous",
+  "capacity_mode": "total_equal",
+  "initial_pE": [
+    0.42,
+    0.5,
+    0.58
+  ],
+  "initial_pN": [
+    0.4,
+    0.5,
+    0.62
+  ],
+  "stage1_iters_requested": 10,
+  "stage1_iters_completed": 10,
+  "stage2_calls": 354,
+  "runtime_sec": 1.650245291995816,
+  "restricted_gap": 0.9077420000000007,
+  "social_cost": 582.9327397506,
+  "offloading_count": 13,
+  "pE": [
+    0.5082000000000001,
+    0.5,
+    0.58
+  ],
+  "pN": [
+    3.110622666405508,
+    2.4504029104629392,
+    0.9985162000000004
+  ],
+  "esp_revenue": [
+    21.224551480241054,
+    17.15,
+    0.0
+  ],
+  "nsp_revenue": [
+    53.06444462018081,
+    28.257324027760102,
+    9.845162000000006
+  ],
+  "assignment_matrix": [
+    [
+      5,
+      2,
+      0
+    ],
+    [
+      1,
+      2,
+      3
+    ],
+    [
+      0,
+      0,
+      0
+    ]
+  ],
+  "artifacts": [
+    "multi_provider_trajectory.csv",
+    "multi_provider_assignment.csv",
+    "multi_provider_provider_metrics.csv",
+    "multi_provider_summary.json",
+    "summary.txt"
+  ]
+}

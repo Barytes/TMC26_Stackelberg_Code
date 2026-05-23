@@ -77,6 +77,12 @@ def _sample_users(cfg: ExperimentConfig, n_users: int, seed: int, trial: int = 0
     return sample_users(cfg_n, rng)
 
 
+def _sample_users_heatmap_direct(cfg: ExperimentConfig, n_users: int, seed: int):
+    cfg_n = replace(cfg, n_users=int(n_users))
+    rng = np.random.default_rng(int(seed))
+    return sample_users(cfg_n, rng)
+
+
 def _write_summary(path: Path, lines: list[str]) -> None:
     write_standard_figure_summary(path, lines)
 
@@ -2175,6 +2181,9 @@ def _write_f1_outputs(
     grid_csv_path: Path | None,
     completed_points: int,
     total_points: int,
+    vbbr_budget_mode: str = "fixed",
+    vbbr_local_budget: int | None = None,
+    sample_mode: str = "figure_trial",
 ) -> None:
     csv_path = out_dir / "F1_q_sensitivity.csv"
     stats_path = out_dir / "F1_q_sensitivity_stats.csv"
@@ -2266,7 +2275,14 @@ def _write_f1_outputs(
     if solver_variant == "paper_iterative_pricing":
         q_mapping = "paper_local_Q = Q"
     elif solver_variant == "vbbr_brd":
-        q_mapping = f"vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget fixed at {int(cfg.stackelberg.vbbr_local_budget)}"
+        if vbbr_local_budget is not None:
+            q_mapping = f"vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget fixed at {int(vbbr_local_budget)}"
+        elif vbbr_budget_mode == "full":
+            q_mapping = "vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget = 2Q"
+        elif vbbr_budget_mode == "sum":
+            q_mapping = "vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget = Q"
+        else:
+            q_mapping = f"vbbr_local_R = Q, vbbr_local_S = Q, vbbr_local_budget fixed at {int(cfg.stackelberg.vbbr_local_budget)}"
     else:
         q_mapping = "solver-specific Q override"
 
@@ -2278,6 +2294,7 @@ def _write_f1_outputs(
         f"trials = {trials}",
         f"stage1_solver_variant = {solver_variant}",
         f"q_mapping = {q_mapping}",
+        f"sample_mode = {sample_mode}",
         f"plot_mode = {plot_mode}",
         f"progress_completed_points = {completed_points}",
         f"progress_total_points = {total_points}",
@@ -2306,6 +2323,32 @@ def main_F1() -> None:
     parser.add_argument("--trials", type=int, default=20)
     parser.add_argument("--plot-mode", type=str, choices=["default", "quality_runtime_calls"], default="default")
     parser.add_argument("--grid-ne-gap-csv", type=str, default=None)
+    parser.add_argument(
+        "--sample-mode",
+        type=str,
+        choices=["figure_trial", "heatmap_direct"],
+        default="figure_trial",
+        help=(
+            "'figure_trial' uses the figure runner's per-trial seed rule. "
+            "'heatmap_direct' matches run_stage1_price_heatmaps.py sampling with rng=default_rng(seed)."
+        ),
+    )
+    parser.add_argument(
+        "--vbbr-budget-mode",
+        type=str,
+        choices=["fixed", "sum", "full"],
+        default="fixed",
+        help=(
+            "Only used when stage1_solver_variant is vbbr_brd. "
+            "'fixed' keeps the config budget, 'sum' sets budget=Q, and 'full' sets budget=2Q."
+        ),
+    )
+    parser.add_argument(
+        "--vbbr-local-budget",
+        type=int,
+        default=None,
+        help="Only used when stage1_solver_variant is vbbr_brd; overrides vbbr_local_budget for every Q.",
+    )
     parser.add_argument("--out-dir", type=str, default=None)
     args = parser.parse_args()
     out_dir = resolve_out_dir("run_figure_F1_q_sensitivity", args.out_dir)
@@ -2339,18 +2382,37 @@ def main_F1() -> None:
             grid_csv_path=grid_csv_path,
             completed_points=len(completed),
             total_points=total_points,
+            vbbr_budget_mode=args.vbbr_budget_mode,
+            vbbr_local_budget=args.vbbr_local_budget,
+            sample_mode=args.sample_mode,
         )
 
     for q in q_list:
         if str(cfg.stackelberg.stage1_solver_variant) == "paper_iterative_pricing":
             stack_cfg = replace(cfg.stackelberg, paper_local_Q=q)
         else:
-            stack_cfg = replace(cfg.stackelberg, vbbr_local_R=q, vbbr_local_S=q)
+            if args.vbbr_local_budget is not None:
+                vbbr_budget = int(args.vbbr_local_budget)
+            elif args.vbbr_budget_mode == "full":
+                vbbr_budget = int(2 * q)
+            elif args.vbbr_budget_mode == "sum":
+                vbbr_budget = int(q)
+            else:
+                vbbr_budget = int(cfg.stackelberg.vbbr_local_budget)
+            stack_cfg = replace(
+                cfg.stackelberg,
+                vbbr_local_R=q,
+                vbbr_local_S=q,
+                vbbr_local_budget=vbbr_budget,
+            )
         for trial in range(1, args.trials + 1):
             key = (int(q), int(trial))
             if key in completed:
                 continue
-            users = _sample_users(cfg, args.n_users, args.seed, trial)
+            if args.sample_mode == "heatmap_direct":
+                users = _sample_users_heatmap_direct(cfg, args.n_users, args.seed)
+            else:
+                users = _sample_users(cfg, args.n_users, args.seed, trial)
             t0 = time.perf_counter()
             res = solve_stage1_pricing(users, cfg.system, stack_cfg)
             runtime = time.perf_counter() - t0
@@ -2393,6 +2455,9 @@ def main_F1() -> None:
                 grid_csv_path=grid_csv_path,
                 completed_points=len(completed),
                 total_points=total_points,
+                vbbr_budget_mode=args.vbbr_budget_mode,
+                vbbr_local_budget=args.vbbr_local_budget,
+                sample_mode=args.sample_mode,
             )
 
 
