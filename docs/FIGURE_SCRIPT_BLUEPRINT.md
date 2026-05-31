@@ -129,6 +129,7 @@ Each canonical figure script should write:
 | A4 | A | `scripts/run_figure_A4_stage2_runtime_vs_users.py` | none | direct runner |
 | A5 | A | `scripts/run_figure_A5_stage2_rollback_diagnostics.py` | none | direct runner |
 | A6 | A | `scripts/run_figure_A6_stage2_exploitability_supp.py` | `scripts/run_algorithm2_exploitability_vs_users.py` | direct runner |
+| A7 | A | `scripts/run_figure_A7_stage2_user_br_convergence_supp.py` | `scripts/run_stage2_user_br_convergence.py` | supplementary direct runner |
 | B1 | B | `scripts/run_figure_B1_stage1_joint_revenue_heatmap.py` | `scripts/run_stage1_price_heatmaps.py` | direct runner |
 | B2 | B | `scripts/run_figure_B2_stage1_restricted_gap_heatmap.py` | `scripts/run_stage1_price_heatmaps.py` | direct runner |
 | B3 | B | `scripts/run_figure_B3_esp_slice_boundary_comparison.py` | `scripts/run_boundary_hypothesis_check.py` | direct runner |
@@ -240,6 +241,29 @@ Each canonical figure script should write:
   supplementary only
 - Primary output:
   `A6_stage2_exploitability_supp.png`
+
+### A7. Supplementary User Best-Response Convergence Diagnostic
+
+- Canonical script:
+  `scripts/run_figure_A7_stage2_user_br_convergence_supp.py`
+- Reuse source:
+  `scripts/run_stage2_user_br_convergence.py`
+- Plot type:
+  two-panel summary plot
+- X axis:
+  number of users
+- Y axes:
+  convergence rate / normalized rounds, and final maximum unilateral best-response gain
+- Methods:
+  sequential user best-response update at fixed prices
+- Repeats:
+  `20` trials per `n`
+- Base parameters:
+  `n in {20, 40, 60, 80, 100}`, seeds derived from base seed `2026`, fixed prices `p_E = 0.5`, `p_N = 0.5`
+- Status:
+  supplementary diagnostic only; it must not replace the Stage II SCM/SOE algorithm in paper-facing experiments
+- Primary output:
+  `user_br_convergence_summary.png`
 
 ---
 

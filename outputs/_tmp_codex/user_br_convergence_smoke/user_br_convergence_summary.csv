@@ -1,0 +1,3 @@
+n_users,count,convergence_rate,cycle_rate,mean_rounds,mean_updates,mean_final_max_gain,mean_social_cost_reduction
+4,2,1.0,0.0,1.0,3.0,0.0,45.01622320624277
+6,2,1.0,0.0,1.0,4.5,8.881784197001252e-16,69.28363753180625

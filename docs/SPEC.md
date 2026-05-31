@@ -115,6 +115,7 @@ The experiments should be organized by paper contribution, not by legacy impleme
 Purpose:
 
 - validate the integrated Stage II SCM route formed by Algorithm 2 and Algorithm 1.
+- optionally include supplementary user-dynamics diagnostics, provided they are clearly labeled as diagnostics and do not replace the SOE/SCM target.
 
 Recommended outputs:
 
@@ -127,6 +128,11 @@ Recommended outputs:
   - number of rollback events,
   - accepted admissions,
   - final offloading-set size.
+- supplementary sequential user best-response diagnostics:
+  - convergence rate,
+  - final maximum unilateral best-response gain,
+  - social-cost trace under accepted user updates,
+  - detected cycles or max-iteration terminations.
 
 Baselines:
 

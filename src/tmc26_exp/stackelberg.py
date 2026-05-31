@@ -46,6 +46,33 @@ class GreedySelectionResult:
 
 
 @dataclass(frozen=True)
+class UserBestResponseStep:
+    round: int
+    updates: int
+    social_cost: float
+    avg_gain: float
+    max_gain: float
+    offloading_size: int
+    total_f: float
+    total_b: float
+
+
+@dataclass(frozen=True)
+class UserBestResponseDynamicsResult:
+    offloading_set: tuple[int, ...]
+    f: np.ndarray
+    b: np.ndarray
+    social_cost: float
+    converged: bool
+    cycle_detected: bool
+    rounds: int
+    updates: int
+    trajectory: tuple[UserBestResponseStep, ...]
+    runtime_sec: float = 0.0
+    stopping_reason: str = "unknown"
+
+
+@dataclass(frozen=True)
 class GainApproxResult:
     provider: Provider
     gain: float
@@ -303,6 +330,103 @@ def _heuristic_score_with_t(
     f_term = _bounded_1d_min(float(data.aw[user_idx]), tE, system.F)
     b_term = _bounded_1d_min(float(data.th[user_idx]), tN, system.B)
     return f_term + b_term - float(data.cl[user_idx])
+
+
+def _profile_user_cost(
+    data: _ProblemData,
+    user_idx: int,
+    f: np.ndarray,
+    b: np.ndarray,
+    pE: float,
+    pN: float,
+) -> float:
+    f_i = float(f[user_idx])
+    b_i = float(b[user_idx])
+    if f_i <= _EPS or b_i <= _EPS:
+        return float(data.cl[user_idx])
+    return _offload_cost_for_user(data, user_idx, f_i, b_i, pE, pN)
+
+
+def _axis_best_quantity(a: float, price: float, upper: float) -> tuple[float, float]:
+    if upper <= _EPS:
+        return 0.0, float("inf")
+    price_eff = max(float(price), _EPS)
+    a_eff = max(float(a), _EPS)
+    x_star = min(math.sqrt(a_eff / price_eff), float(upper))
+    cost = a_eff / max(x_star, _EPS) + price_eff * x_star
+    return float(x_star), float(cost)
+
+
+def _user_best_response_given_others(
+    data: _ProblemData,
+    user_idx: int,
+    f: np.ndarray,
+    b: np.ndarray,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> tuple[float, float, float, float]:
+    current_cost = _profile_user_cost(data, user_idx, f, b, pE, pN)
+    residual_f = float(system.F - (float(np.sum(f)) - float(f[user_idx])))
+    residual_b = float(system.B - (float(np.sum(b)) - float(b[user_idx])))
+
+    best_f = 0.0
+    best_b = 0.0
+    best_cost = float(data.cl[user_idx])
+    if residual_f > _EPS and residual_b > _EPS:
+        cand_f, f_cost = _axis_best_quantity(float(data.aw[user_idx]), pE, residual_f)
+        cand_b, b_cost = _axis_best_quantity(float(data.th[user_idx]), pN, residual_b)
+        offload_cost = f_cost + b_cost
+        if offload_cost < best_cost:
+            best_f = cand_f
+            best_b = cand_b
+            best_cost = float(offload_cost)
+
+    gain = max(0.0, float(current_cost - best_cost))
+    return gain, float(best_cost), float(best_f), float(best_b)
+
+
+def _user_br_profile_key(f: np.ndarray, b: np.ndarray) -> tuple[tuple[int, ...], tuple[float, ...], tuple[float, ...]]:
+    offloading = tuple(int(i) for i in np.flatnonzero((f > _EPS) & (b > _EPS)))
+    return (
+        offloading,
+        tuple(float(x) for x in np.round(f, 10)),
+        tuple(float(x) for x in np.round(b, 10)),
+    )
+
+
+def _user_br_step(
+    data: _ProblemData,
+    round_idx: int,
+    updates: int,
+    f: np.ndarray,
+    b: np.ndarray,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+) -> UserBestResponseStep:
+    costs = np.asarray(
+        [_profile_user_cost(data, i, f, b, pE, pN) for i in range(data.cl.size)],
+        dtype=float,
+    )
+    gains = np.asarray(
+        [
+            _user_best_response_given_others(data, i, f, b, pE, pN, system)[0]
+            for i in range(data.cl.size)
+        ],
+        dtype=float,
+    )
+    positive = np.maximum(gains, 0.0)
+    return UserBestResponseStep(
+        round=int(round_idx),
+        updates=int(updates),
+        social_cost=float(np.sum(costs)),
+        avg_gain=float(np.mean(positive)) if positive.size else 0.0,
+        max_gain=float(np.max(positive)) if positive.size else 0.0,
+        offloading_size=int(np.count_nonzero((f > _EPS) & (b > _EPS))),
+        total_f=float(np.sum(f)),
+        total_b=float(np.sum(b)),
+    )
 
 
 def _margin_for_user(
@@ -860,6 +984,107 @@ def solve_stage2_scm(
         cfg,
         allow_exact_inner=False,
         inner_solver_mode=inner_solver_mode,
+    )
+
+
+def solve_stage2_user_best_response_dynamics(
+    users: UserBatch,
+    pE: float,
+    pN: float,
+    system: SystemConfig,
+    cfg: StackelbergConfig,
+    *,
+    max_rounds: int | None = None,
+    improvement_tol: float | None = None,
+    initial_offloading_set: Iterable[int] | None = None,
+    randomize_order: bool = False,
+    seed: int | None = None,
+) -> UserBestResponseDynamicsResult:
+    """Sequential Stage-II user best-response dynamics for supplementary diagnostics.
+
+    This routine is intentionally separate from the paper-facing Stage-II SCM/SOE
+    solver. It keeps other users' current resource purchases fixed while the
+    active user chooses between local execution and its best offloading response
+    under the residual capacities.
+    """
+    data = _build_data(users)
+    n_users = users.n
+    f = np.zeros(n_users, dtype=float)
+    b = np.zeros(n_users, dtype=float)
+
+    if initial_offloading_set is not None:
+        inner = _solve_fixed_set_inner_exact(users, initial_offloading_set, pE, pN, system)
+        if inner is None:
+            raise ValueError("initial_offloading_set does not admit a feasible fixed-set allocation.")
+        f = np.asarray(inner.f, dtype=float).copy()
+        b = np.asarray(inner.b, dtype=float).copy()
+
+    rounds_limit = int(max_rounds if max_rounds is not None else cfg.greedy_max_iters)
+    tol = float(improvement_tol if improvement_tol is not None else cfg.search_improvement_tol)
+    rng = np.random.default_rng(seed) if randomize_order else None
+    start_time = time.perf_counter()
+
+    trajectory: list[UserBestResponseStep] = [
+        _user_br_step(data, 0, 0, f, b, pE, pN, system),
+    ]
+    seen_profiles = {_user_br_profile_key(f, b)}
+    total_updates = 0
+    converged = bool(trajectory[-1].max_gain <= tol)
+    cycle_detected = False
+    stopping_reason = "converged" if converged else "max_rounds"
+    rounds_done = 0
+
+    for round_idx in range(1, max(0, rounds_limit) + 1):
+        if converged:
+            break
+
+        order = np.arange(n_users, dtype=int)
+        if rng is not None:
+            rng.shuffle(order)
+
+        round_updates = 0
+        for i_raw in order:
+            i = int(i_raw)
+            gain, _, best_f, best_b = _user_best_response_given_others(data, i, f, b, pE, pN, system)
+            if gain <= tol:
+                continue
+            f[i] = best_f
+            b[i] = best_b
+            round_updates += 1
+            total_updates += 1
+
+        step = _user_br_step(data, round_idx, round_updates, f, b, pE, pN, system)
+        trajectory.append(step)
+        rounds_done = round_idx
+
+        if step.max_gain <= tol:
+            converged = True
+            stopping_reason = "converged"
+            break
+
+        profile_key = _user_br_profile_key(f, b)
+        if profile_key in seen_profiles:
+            cycle_detected = True
+            stopping_reason = "cycle_detected"
+            break
+        seen_profiles.add(profile_key)
+
+    final_step = trajectory[-1]
+    if not converged and not cycle_detected and rounds_done >= rounds_limit:
+        stopping_reason = "max_rounds"
+
+    return UserBestResponseDynamicsResult(
+        offloading_set=tuple(int(i) for i in np.flatnonzero((f > _EPS) & (b > _EPS))),
+        f=f,
+        b=b,
+        social_cost=float(final_step.social_cost),
+        converged=converged,
+        cycle_detected=cycle_detected,
+        rounds=int(rounds_done),
+        updates=int(total_updates),
+        trajectory=tuple(trajectory),
+        runtime_sec=float(time.perf_counter() - start_time),
+        stopping_reason=stopping_reason,
     )
 
 
