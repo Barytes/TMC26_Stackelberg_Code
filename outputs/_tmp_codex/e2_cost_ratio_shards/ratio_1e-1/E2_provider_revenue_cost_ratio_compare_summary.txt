@@ -1,0 +1,29 @@
+[run]
+figure_id = E2
+block = E
+script = run_figure_E2_provider_revenue_cost_ratio_compare.py
+output_dir = outputs/_tmp_codex/e2_cost_ratio_shards/ratio_1e-1
+
+[artifacts]
+primary_image = E2_provider_revenue_cost_ratio_compare.png
+primary_csv = E2_provider_revenue_cost_ratio_compare.csv
+summary_file = E2_provider_revenue_cost_ratio_compare_summary.txt
+
+[inputs]
+config = configs/default.toml
+seed = 2026
+n_users = 100
+n_trials = 10
+
+[primary_metrics]
+scan_mode = fixed_cE_scan_cN
+fixed_cE = 0.01
+ratio_list = 0.1
+price_cap_rule = preserve_base_search_width_above_cost_floor
+methods = Full model,ME,SingleSP,Coop,Rand
+progress_completed_points = 3
+progress_total_points = 50
+progress_status = running
+
+[runtime]
+runtime_sec = 20.127

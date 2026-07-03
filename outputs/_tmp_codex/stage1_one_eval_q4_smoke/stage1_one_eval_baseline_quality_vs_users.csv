@@ -1,0 +1,4 @@
+method,n_users,trial,source,success,objective_eval_budget,objective_evals_completed,reference_stage2_calls,search_budget_exhausted,budget_stop_mode,final_pE,final_pN,offloading_size,final_grid_ne_gap,esp_revenue,nsp_revenue,joint_revenue,runtime_sec,stage2_solver_calls,audit_stage2_solver_calls,total_stage2_solver_calls,error
+Proposed,50,1,reused_reference,1,,,49,0,reference_reuse,5.04201888414955,1.3950473156451193,9,4.144212842728393,101.08715680016284,55.40189262580476,156.4890494259676,0.3825995000079274,49,240,289,
+BO-online,50,1,one_objective_eval_rerun,1,1,1,49,1,after_one_objective_eval,0.5,0.5,14,124.58164118068424,48.09136039808878,19.6,67.69136039808879,2.471570416993927,11,0,11,
+GA,50,1,one_objective_eval_rerun,1,1,1,49,1,after_one_objective_eval,0.5,0.5,14,124.58164118068424,48.09136039808878,19.6,67.69136039808879,2.9899596669711173,11,0,11,

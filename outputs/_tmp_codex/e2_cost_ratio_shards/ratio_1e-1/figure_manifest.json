@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "figure_id": "E2-cost-ratio",
+  "block": "E",
+  "base_stem": "E2_provider_revenue_cost_ratio_compare",
+  "script": "run_e2_cost_ratio_sweep.py",
+  "output_dir": "outputs/_tmp_codex/e2_cost_ratio_shards/ratio_1e-1",
+  "summary_file": "E2_provider_revenue_cost_ratio_compare_summary.txt",
+  "primary_image": "E2_provider_revenue_cost_ratio_compare.png",
+  "primary_csv": "E2_provider_revenue_cost_ratio_compare.csv",
+  "config": "configs/default.toml",
+  "seed": "2026",
+  "n_users": "100",
+  "n_trials": "10",
+  "fixed_cE": "0.01",
+  "ratio_list": "0.1",
+  "price_cap_rule": "preserve_base_search_width_above_cost_floor",
+  "runtime_sec": "20.127"
+}

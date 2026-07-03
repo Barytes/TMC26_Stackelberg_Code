@@ -1,0 +1,16 @@
+config = configs/stage1_vbbr_q4_budget8.toml
+seed = 2026
+trials = 10
+n_users_list = 50,100,150,200,250
+methods = Proposed,BO-online,GA
+reference_run_dir = outputs/2. comp stackelberg baseline/run_stage1_vbbr_q4_budget8_true_grid_ne_gap_vs_users_20260618_n50_250_t10
+proposed_audit_csv = outputs/2. comp stackelberg baseline/run_stage1_vbbr_q4_budget8_true_grid_ne_gap_vs_users_20260618_n50_250_t10/proposed_true_grid_ne_gap_audit_120.csv
+objective_eval_budget = 1
+stop_rule = GA and BO-online stop immediately after one objective evaluation
+first_price_rule = GA and BO-online use the first price evaluated by the current baseline runners; both start from the clipped Stage-I initial price
+final_audit_grid_points = 25
+workers = 8
+final_grid_ne_gap_definition = max unilateral provider revenue improvement on the audit price grid with the other provider price fixed
+stage2_solver_calls_definition = all Stage-II solves used inside the single objective evaluation, including unilateral grid evaluations for NE-gap scoring
+proposed_rows = reused unchanged from reference_run_dir
+failed_runs = 0

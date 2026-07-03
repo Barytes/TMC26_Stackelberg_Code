@@ -1,0 +1,28 @@
+[run]
+figure_id = E2
+block = E
+script = run_figure_E2_provider_revenue_cost_ratio_compare.py
+output_dir = outputs/_tmp_codex/e2_cost_ratio_smoke
+
+[artifacts]
+primary_image = E2_provider_revenue_cost_ratio_compare.png
+primary_csv = E2_provider_revenue_cost_ratio_compare.csv
+summary_file = E2_provider_revenue_cost_ratio_compare_summary.txt
+
+[inputs]
+config = configs/default.toml
+seed = 2026
+n_users = 5
+n_trials = 1
+
+[primary_metrics]
+scan_mode = fixed_cE_scan_cN
+fixed_cE = 0.01
+ratio_list = 1
+methods = Full model,ME,SingleSP,Coop,Rand
+progress_completed_points = 5
+progress_total_points = 5
+progress_status = completed
+
+[runtime]
+runtime_sec = 1.818

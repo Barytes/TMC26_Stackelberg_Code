@@ -6,6 +6,7 @@ from dataclasses import replace
 import os
 from pathlib import Path
 import sys
+from typing import TextIO
 
 import matplotlib
 
@@ -240,6 +241,52 @@ def _apply_baseline_overrides(
     return replace(base_cfg, **updates) if updates else base_cfg
 
 
+def _format_progress_message(
+    *,
+    completed: int,
+    total: int,
+    n_users: int,
+    trial: int,
+    trials: int,
+    method: str,
+    phase: str,
+) -> str:
+    current = min(int(completed) + 1, int(total)) if int(total) > 0 else 0
+    return (
+        f"[{current}/{int(total)}] "
+        f"phase={phase} "
+        f"n_users={int(n_users)} "
+        f"trial={int(trial)}/{int(trials)} "
+        f"method={method}"
+    )
+
+
+def _print_progress(
+    *,
+    completed: int,
+    total: int,
+    n_users: int,
+    trial: int,
+    trials: int,
+    method: str,
+    phase: str,
+    stream: TextIO = sys.stdout,
+) -> None:
+    print(
+        _format_progress_message(
+            completed=completed,
+            total=total,
+            n_users=n_users,
+            trial=trial,
+            trials=trials,
+            method=method,
+            phase=phase,
+        ),
+        file=stream,
+        flush=True,
+    )
+
+
 def _finite_stats(values: np.ndarray) -> dict[str, float]:
     if values.size == 0:
         return {
@@ -310,6 +357,26 @@ def load_summary_rows(csv_path: Path) -> list[dict[str, object]]:
 def load_trial_rows(csv_path: Path) -> list[dict[str, object]]:
     with csv_path.open("r", newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _trial_row_key(row: dict[str, object]) -> tuple[str, int, int]:
+    return (str(row["method"]), int(float(row["n_users"])), int(float(row["trial"])))
+
+
+def _load_checkpoint_rows(csv_path: Path | None) -> tuple[list[dict[str, object]], set[tuple[str, int, int]]]:
+    if csv_path is None or not csv_path.exists():
+        return [], set()
+    rows = load_trial_rows(csv_path)
+    return rows, {_trial_row_key(row) for row in rows}
+
+
+def _expected_trial_keys(methods: list[str], n_list: list[int], trials: int) -> set[tuple[str, int, int]]:
+    return {
+        (str(method), int(n), int(trial))
+        for method in methods
+        for n in n_list
+        for trial in range(1, int(trials) + 1)
+    }
 
 
 def _extract_metric_series(
@@ -1073,20 +1140,36 @@ def compute_trial_rows(
     marl_price_levels: int | None = None,
     marl_episodes: int | None = None,
     marl_steps_per_episode: int | None = None,
+    checkpoint_csv_path: Path | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     cfg = _load_cfg(config_path)
     audit_points = max(2, int(final_audit_grid_points if final_audit_grid_points is not None else cfg.baselines.gso_grid_points))
     pE_audit_grid = np.linspace(float(cfg.system.cE), float(cfg.baselines.max_price_E), audit_points)
     pN_audit_grid = np.linspace(float(cfg.system.cN), float(cfg.baselines.max_price_N), audit_points)
     heatmap_surfaces = _load_gap_heatmap_surfaces(n_list, gap_heatmap_csv_template)
-    rows: list[dict[str, object]] = []
-    failures = 0
+    rows, completed_keys = _load_checkpoint_rows(checkpoint_csv_path)
+    expected_keys = _expected_trial_keys(methods, n_list, trials)
+    failures = sum(1 for row in rows if _trial_row_key(row) in expected_keys and int(float(row.get("success", 0))) != 1)
+    completed_runs = len(completed_keys & expected_keys)
+    total_runs = len(n_list) * int(trials) * len(methods)
 
     for n in n_list:
         heatmap_surface = heatmap_surfaces.get(int(n))
         for trial in range(1, trials + 1):
             users = _sample_users(cfg, n, seed, trial)
             for method in methods:
+                key = (str(method), int(n), int(trial))
+                if key in completed_keys:
+                    continue
+                _print_progress(
+                    completed=completed_runs,
+                    total=total_runs,
+                    n_users=int(n),
+                    trial=int(trial),
+                    trials=int(trials),
+                    method=method,
+                    phase="start",
+                )
                 internal_method = "Proposed" if method == "Proposed" else method
                 run_base_cfg = cfg.baselines
                 if method != "Proposed":
@@ -1168,6 +1251,18 @@ def compute_trial_rows(
                             "error": "",
                         }
                     )
+                    completed_keys.add(key)
+                    if checkpoint_csv_path is not None:
+                        write_csv_rows(checkpoint_csv_path, TRIAL_FIELDS, rows)
+                    _print_progress(
+                        completed=completed_runs,
+                        total=total_runs,
+                        n_users=int(n),
+                        trial=int(trial),
+                        trials=int(trials),
+                        method=method,
+                        phase="done",
+                    )
                 except Exception as exc:
                     failures += 1
                     rows.append(
@@ -1192,6 +1287,19 @@ def compute_trial_rows(
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    completed_keys.add(key)
+                    if checkpoint_csv_path is not None:
+                        write_csv_rows(checkpoint_csv_path, TRIAL_FIELDS, rows)
+                    _print_progress(
+                        completed=completed_runs,
+                        total=total_runs,
+                        n_users=int(n),
+                        trial=int(trial),
+                        trials=int(trials),
+                        method=method,
+                        phase="error",
+                    )
+                completed_runs += 1
     meta = {
         "audit_grid_points": int(audit_points),
         "search_objective_grid_points": int(cfg.baselines.gso_grid_points),
@@ -1256,6 +1364,7 @@ def main() -> None:
         out_dir = Path(args.out_dir).resolve() if args.out_dir else summary_csv_override.parent
     else:
         out_dir = resolve_out_dir("run_stage1_final_grid_ne_gap_vs_users", args.out_dir)
+        trials_csv = out_dir / "stage1_final_grid_ne_gap_vs_users.csv"
         rows, meta = compute_trial_rows(
             config_path=str(args.config),
             seed=int(args.seed),
@@ -1271,11 +1380,11 @@ def main() -> None:
             marl_price_levels=args.marl_price_levels,
             marl_episodes=args.marl_episodes,
             marl_steps_per_episode=args.marl_steps_per_episode,
+            checkpoint_csv_path=trials_csv,
         )
         summary_rows = summarize_trials(rows, methods, n_list)
         trial_rows = rows
 
-        trials_csv = out_dir / "stage1_final_grid_ne_gap_vs_users.csv"
         summary_csv = out_dir / "stage1_final_grid_ne_gap_vs_users_stats.csv"
         fig_path = out_dir / "stage1_final_grid_ne_gap_vs_users.png"
         summary_path = out_dir / "stage1_final_grid_ne_gap_vs_users_summary.txt"

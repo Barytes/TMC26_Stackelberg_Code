@@ -25,6 +25,12 @@ METHOD_LABELS = {
     "BO-online": "BO",
 }
 
+METHOD_X_OFFSET_FACTORS = {
+    "GA": -0.035,
+    "BO": 0.035,
+    "BO-online": 0.035,
+}
+
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8", newline="") as f:
@@ -68,6 +74,14 @@ def _series(
     return xs, center, low, high
 
 
+def _plot_xs(xs: np.ndarray, method: str) -> np.ndarray:
+    if xs.size <= 1:
+        return xs.astype(float)
+    unique_xs = np.unique(xs.astype(float))
+    step = float(np.min(np.diff(unique_xs))) if unique_xs.size > 1 else 0.0
+    return xs.astype(float) + step * METHOD_X_OFFSET_FACTORS.get(method, 0.0)
+
+
 def _plot_metric(
     *,
     rows: list[dict[str, str]],
@@ -85,9 +99,10 @@ def _plot_metric(
             xs, center, low, high = _series(rows, method=method, metric=metric)
             if xs.size == 0:
                 continue
+            plot_xs = _plot_xs(xs, method)
             color = METHOD_COLORS.get(method)
             ax.plot(
-                xs,
+                plot_xs,
                 center,
                 marker="o",
                 linewidth=2.2,
@@ -95,7 +110,7 @@ def _plot_metric(
                 label=METHOD_LABELS.get(method, method),
                 color=color,
             )
-            ax.fill_between(xs, low, high, alpha=0.18, color=color)
+            ax.fill_between(plot_xs, low, high, alpha=0.18, color=color)
         ax.set_xlabel("Number of users")
         ax.set_ylabel(ylabel)
         ax.set_xticks([10, 15, 20, 25, 30])

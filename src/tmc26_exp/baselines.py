@@ -5,7 +5,9 @@ import itertools
 import math
 import os
 from pathlib import Path
-from typing import Callable
+import sys
+import time
+from typing import Callable, TextIO
 
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
@@ -65,6 +67,64 @@ def _normalize_stage1_objective_name(objective_name: str) -> str:
     if raw == "epsilon_proxy":
         return "legacy_gain_proxy"
     return raw
+
+
+def _format_ga_progress_message(
+    *,
+    phase: str,
+    generation: str,
+    individual_index: int | None = None,
+    population_size: int | None = None,
+    evals: int | None = None,
+    stage2_unique_prices: int | None = None,
+    best_score: float | None = None,
+    best_price: tuple[float, float] | None = None,
+    elapsed_sec: float | None = None,
+) -> str:
+    parts = ["[GA]", f"phase={phase}", f"generation={generation}"]
+    if individual_index is not None and population_size is not None:
+        parts.append(f"individual={int(individual_index)}/{int(population_size)}")
+    if evals is not None:
+        parts.append(f"evals={int(evals)}")
+    if stage2_unique_prices is not None:
+        parts.append(f"stage2_unique_prices={int(stage2_unique_prices)}")
+    if best_score is not None:
+        parts.append(f"best_score={float(best_score):.12g}")
+    if best_price is not None:
+        parts.append(f"best_price={float(best_price[0]):.12g},{float(best_price[1]):.12g}")
+    if elapsed_sec is not None:
+        parts.append(f"elapsed_sec={float(elapsed_sec):.2f}")
+    return " ".join(parts)
+
+
+def _print_ga_progress(
+    *,
+    phase: str,
+    generation: str,
+    individual_index: int | None = None,
+    population_size: int | None = None,
+    evals: int | None = None,
+    stage2_unique_prices: int | None = None,
+    best_score: float | None = None,
+    best_price: tuple[float, float] | None = None,
+    elapsed_sec: float | None = None,
+    stream: TextIO = sys.stdout,
+) -> None:
+    print(
+        _format_ga_progress_message(
+            phase=phase,
+            generation=generation,
+            individual_index=individual_index,
+            population_size=population_size,
+            evals=evals,
+            stage2_unique_prices=stage2_unique_prices,
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=elapsed_sec,
+        ),
+        file=stream,
+        flush=True,
+    )
 
 
 def _build_data(users: UserBatch) -> _Data:
@@ -2162,6 +2222,7 @@ def run_stage1_genetic_algorithm(
     best_out: BaselineOutcome | None = None
     best_score: float | None = None
     best_price: tuple[float, float] | None = None
+    t0 = time.perf_counter()
 
     def _clip_price(pE: float, pN: float) -> tuple[float, float]:
         return (
@@ -2169,12 +2230,41 @@ def run_stage1_genetic_algorithm(
             round(min(max(float(pN), pN_min), pN_max), 6),
         )
 
-    def _evaluate_individual(pE: float, pN: float) -> tuple[tuple[float, float], float, BaselineOutcome]:
+    def _evaluate_individual(
+        pE: float,
+        pN: float,
+        *,
+        generation_label: str,
+        individual_index: int,
+        population_size: int,
+    ) -> tuple[tuple[float, float], float, BaselineOutcome]:
         nonlocal evals, best_out, best_score, best_price
         pE, pN = _clip_price(pE, pN)
+        _print_ga_progress(
+            phase="individual_start",
+            generation=generation_label,
+            individual_index=individual_index,
+            population_size=population_size,
+            evals=evals + 1,
+            stage2_unique_prices=len(stage2_cache),
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=time.perf_counter() - t0,
+        )
         evals += 1
         key = _price_cache_key(pE, pN)
         if key not in stage2_cache:
+            _print_ga_progress(
+                phase="stage2_start",
+                generation=generation_label,
+                individual_index=individual_index,
+                population_size=population_size,
+                evals=evals,
+                stage2_unique_prices=len(stage2_cache),
+                best_score=best_score,
+                best_price=best_price,
+                elapsed_sec=time.perf_counter() - t0,
+            )
             stage2_cache[key] = _stage2_solver(
                 base_cfg.stage2_solver_for_pricing,
                 users,
@@ -2184,7 +2274,41 @@ def run_stage1_genetic_algorithm(
                 stack_cfg,
                 base_cfg,
             )
+            _print_ga_progress(
+                phase="stage2_done",
+                generation=generation_label,
+                individual_index=individual_index,
+                population_size=population_size,
+                evals=evals,
+                stage2_unique_prices=len(stage2_cache),
+                best_score=best_score,
+                best_price=best_price,
+                elapsed_sec=time.perf_counter() - t0,
+            )
+        else:
+            _print_ga_progress(
+                phase="stage2_cache_hit",
+                generation=generation_label,
+                individual_index=individual_index,
+                population_size=population_size,
+                evals=evals,
+                stage2_unique_prices=len(stage2_cache),
+                best_score=best_score,
+                best_price=best_price,
+                elapsed_sec=time.perf_counter() - t0,
+            )
         out = stage2_cache[key]
+        _print_ga_progress(
+            phase="objective_start",
+            generation=generation_label,
+            individual_index=individual_index,
+            population_size=population_size,
+            evals=evals,
+            stage2_unique_prices=len(stage2_cache),
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=time.perf_counter() - t0,
+        )
         score, candidate = _objective_score_and_candidate(
             out,
             objective_name,
@@ -2200,6 +2324,17 @@ def run_stage1_genetic_algorithm(
             best_out = candidate
             best_score = float(score)
             best_price = (pE, pN)
+        _print_ga_progress(
+            phase="individual_done",
+            generation=generation_label,
+            individual_index=individual_index,
+            population_size=population_size,
+            evals=evals,
+            stage2_unique_prices=len(stage2_cache),
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=time.perf_counter() - t0,
+        )
         return (pE, pN), float(score), candidate
 
     def _tournament_select(
@@ -2239,18 +2374,44 @@ def run_stage1_genetic_algorithm(
     init_price = _clip_price(float(stack_cfg.initial_pE), float(stack_cfg.initial_pN))
     trajectory: list[tuple[float, float]] = [init_price]
 
-    def _evaluate_population(pop: np.ndarray) -> tuple[np.ndarray, list[BaselineOutcome], np.ndarray]:
+    def _evaluate_population(pop: np.ndarray, *, generation_label: str) -> tuple[np.ndarray, list[BaselineOutcome], np.ndarray]:
+        _print_ga_progress(
+            phase="population_start",
+            generation=generation_label,
+            population_size=int(pop.shape[0]),
+            evals=evals,
+            stage2_unique_prices=len(stage2_cache),
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=time.perf_counter() - t0,
+        )
         scored_prices: list[tuple[float, float]] = []
         scored_outcomes: list[BaselineOutcome] = []
         score_values: list[float] = []
-        for pE, pN in pop:
-            price, score, out = _evaluate_individual(float(pE), float(pN))
+        for idx, (pE, pN) in enumerate(pop, start=1):
+            price, score, out = _evaluate_individual(
+                float(pE),
+                float(pN),
+                generation_label=generation_label,
+                individual_index=int(idx),
+                population_size=int(pop.shape[0]),
+            )
             scored_prices.append(price)
             scored_outcomes.append(out)
             score_values.append(score)
+        _print_ga_progress(
+            phase="population_done",
+            generation=generation_label,
+            population_size=int(pop.shape[0]),
+            evals=evals,
+            stage2_unique_prices=len(stage2_cache),
+            best_score=best_score,
+            best_price=best_price,
+            elapsed_sec=time.perf_counter() - t0,
+        )
         return np.asarray(scored_prices, dtype=float), scored_outcomes, np.asarray(score_values, dtype=float)
 
-    population, _, scores = _evaluate_population(population)
+    population, _, scores = _evaluate_population(population, generation_label=f"initial/{n_gen}")
     if best_price is not None and (
         not trajectory
         or abs(best_price[0] - trajectory[-1][0]) + abs(best_price[1] - trajectory[-1][1]) > 1e-12
@@ -2268,7 +2429,7 @@ def run_stage1_genetic_algorithm(
             if len(next_population) < n_pop:
                 next_population.append(_mutate(child_b))
         population = np.asarray(next_population, dtype=float)
-        population, _, scores = _evaluate_population(population)
+        population, _, scores = _evaluate_population(population, generation_label=f"{_gen + 1}/{n_gen}")
         if best_price is not None and (
             not trajectory
             or abs(best_price[0] - trajectory[-1][0]) + abs(best_price[1] - trajectory[-1][1]) > 1e-12

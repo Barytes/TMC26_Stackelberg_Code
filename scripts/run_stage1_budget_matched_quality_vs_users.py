@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+from typing import TextIO
 
 import matplotlib
 
@@ -119,6 +120,17 @@ def _load_reference_budgets(reference_csv: Path, n_list: list[int], trials: int)
     if missing:
         raise ValueError(f"Reference proposed CSV missing budgets for: {missing[:5]}")
     return proposed_rows, budget_map
+
+
+def _trial_row_key(row: dict[str, object]) -> tuple[str, int, int]:
+    return (str(row["method"]), int(float(row["n_users"])), int(float(row["trial"])))
+
+
+def _load_checkpoint_rows(csv_path: Path | None) -> tuple[list[dict[str, object]], set[tuple[str, int, int]]]:
+    if csv_path is None or not csv_path.exists():
+        return [], set()
+    rows = list(load_csv_rows(csv_path))
+    return rows, {_trial_row_key(row) for row in rows}
 
 
 def _make_budgeted_stage2_accessor(users, system, stack_cfg, base_cfg, budget: int):
@@ -509,6 +521,56 @@ def _budgeted_baseline_outcome(method: str, *, users, system, stack_cfg, base_cf
     raise ValueError(f"Unsupported method={method}")
 
 
+def _format_progress_message(
+    *,
+    completed: int,
+    total: int,
+    n_users: int,
+    trial: int,
+    trials: int,
+    method: str,
+    budget: int,
+    phase: str,
+) -> str:
+    current = min(int(completed) + 1, int(total)) if int(total) > 0 else 0
+    return (
+        f"[{current}/{int(total)}] "
+        f"phase={phase} "
+        f"n_users={int(n_users)} "
+        f"trial={int(trial)}/{int(trials)} "
+        f"method={method} "
+        f"budget_stage2_calls={int(budget)}"
+    )
+
+
+def _print_progress(
+    *,
+    completed: int,
+    total: int,
+    n_users: int,
+    trial: int,
+    trials: int,
+    method: str,
+    budget: int,
+    phase: str,
+    stream: TextIO = sys.stdout,
+) -> None:
+    print(
+        _format_progress_message(
+            completed=completed,
+            total=total,
+            n_users=n_users,
+            trial=trial,
+            trials=trials,
+            method=method,
+            budget=budget,
+            phase=phase,
+        ),
+        file=stream,
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -543,40 +605,48 @@ def main() -> None:
     proposed_rows, budget_map = _load_reference_budgets(reference_csv, n_list, int(args.trials))
     cfg = _load_cfg(str(args.config))
     out_dir = resolve_out_dir("run_stage1_budget_matched_quality_vs_users", args.out_dir)
+    trials_csv = out_dir / "stage1_budget_matched_quality_vs_users.csv"
 
-    rows: list[dict[str, object]] = []
+    rows, completed_keys = _load_checkpoint_rows(trials_csv)
     proposed_subset = [
         row
         for row in proposed_rows
         if int(row["n_users"]) in n_list and 1 <= int(row["trial"]) <= int(args.trials)
     ]
     for row in proposed_subset:
-        rows.append(
-            {
-                "method": "Proposed",
-                "n_users": int(row["n_users"]),
-                "trial": int(row["trial"]),
-                "source": "reused_reference",
-                "success": int(row["success"]),
-                "budget_stage2_calls": int(row["stage2_solver_calls"]),
-                "search_budget_exhausted": 0,
-                "budget_stop_mode": "reference_reuse",
-                "final_pE": float(row["final_pE"]),
-                "final_pN": float(row["final_pN"]),
-                "offloading_size": int(row["offloading_size"]),
-                "final_grid_ne_gap": float(row["final_grid_ne_gap"]),
-                "esp_revenue": float(row["esp_revenue"]),
-                "nsp_revenue": float(row["nsp_revenue"]),
-                "joint_revenue": float(row["joint_revenue"]),
-                "runtime_sec": float(row["runtime_sec"]),
-                "stage2_solver_calls": int(row["stage2_solver_calls"]),
-                "audit_stage2_solver_calls": int(row["audit_stage2_solver_calls"]),
-                "total_stage2_solver_calls": int(row["total_stage2_solver_calls"]),
-                "error": str(row.get("error", "")),
-            }
-        )
+        key = ("Proposed", int(row["n_users"]), int(row["trial"]))
+        if key not in completed_keys:
+            rows.append(
+                {
+                    "method": "Proposed",
+                    "n_users": int(row["n_users"]),
+                    "trial": int(row["trial"]),
+                    "source": "reused_reference",
+                    "success": int(row["success"]),
+                    "budget_stage2_calls": int(row["stage2_solver_calls"]),
+                    "search_budget_exhausted": 0,
+                    "budget_stop_mode": "reference_reuse",
+                    "final_pE": float(row["final_pE"]),
+                    "final_pN": float(row["final_pN"]),
+                    "offloading_size": int(row["offloading_size"]),
+                    "final_grid_ne_gap": float(row["final_grid_ne_gap"]),
+                    "esp_revenue": float(row["esp_revenue"]),
+                    "nsp_revenue": float(row["nsp_revenue"]),
+                    "joint_revenue": float(row["joint_revenue"]),
+                    "runtime_sec": float(row["runtime_sec"]),
+                    "stage2_solver_calls": int(row["stage2_solver_calls"]),
+                    "audit_stage2_solver_calls": int(row["audit_stage2_solver_calls"]),
+                    "total_stage2_solver_calls": int(row["total_stage2_solver_calls"]),
+                    "error": str(row.get("error", "")),
+                }
+            )
+            completed_keys.add(key)
+    write_csv_rows(trials_csv, TRIAL_FIELDS, rows)
 
-    failures = 0
+    failures = sum(1 for row in rows if int(float(row.get("success", 0))) != 1)
+    baseline_keys = {(method, int(n), int(trial)) for method in methods for n in n_list for trial in range(1, int(args.trials) + 1)}
+    completed_baseline_runs = len(completed_keys & baseline_keys)
+    total_baseline_runs = len(n_list) * int(args.trials) * len(methods)
     for n in n_list:
         for trial in range(1, int(args.trials) + 1):
             users = _sample_users(cfg, int(n), int(args.seed), int(trial))
@@ -592,6 +662,19 @@ def main() -> None:
                 marl_steps_per_episode=args.marl_steps_per_episode,
             )
             for method in methods:
+                key = (str(method), int(n), int(trial))
+                if key in completed_keys:
+                    continue
+                _print_progress(
+                    completed=completed_baseline_runs,
+                    total=total_baseline_runs,
+                    n_users=int(n),
+                    trial=int(trial),
+                    trials=int(args.trials),
+                    method=method,
+                    budget=budget,
+                    phase="start",
+                )
                 try:
                     out, meta = _budgeted_baseline_outcome(
                         method,
@@ -633,6 +716,18 @@ def main() -> None:
                             "error": "",
                         }
                     )
+                    completed_keys.add(key)
+                    write_csv_rows(trials_csv, TRIAL_FIELDS, rows)
+                    _print_progress(
+                        completed=completed_baseline_runs,
+                        total=total_baseline_runs,
+                        n_users=int(n),
+                        trial=int(trial),
+                        trials=int(args.trials),
+                        method=method,
+                        budget=budget,
+                        phase="done",
+                    )
                 except Exception as exc:
                     failures += 1
                     rows.append(
@@ -659,10 +754,23 @@ def main() -> None:
                             "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
+                    completed_keys.add(key)
+                    write_csv_rows(trials_csv, TRIAL_FIELDS, rows)
+                    _print_progress(
+                        completed=completed_baseline_runs,
+                        total=total_baseline_runs,
+                        n_users=int(n),
+                        trial=int(trial),
+                        trials=int(args.trials),
+                        method=method,
+                        budget=budget,
+                        phase="error",
+                    )
+                completed_baseline_runs += 1
 
     method_order = ["Proposed", *methods]
     summary_rows = quality.summarize_trials(rows, method_order, n_list)
-    write_csv_rows(out_dir / "stage1_budget_matched_quality_vs_users.csv", TRIAL_FIELDS, rows)
+    write_csv_rows(trials_csv, TRIAL_FIELDS, rows)
     write_csv_rows(out_dir / "stage1_budget_matched_quality_vs_users_stats.csv", quality._summary_fieldnames(), summary_rows)
     quality.plot_metric_summary(
         summary_rows,

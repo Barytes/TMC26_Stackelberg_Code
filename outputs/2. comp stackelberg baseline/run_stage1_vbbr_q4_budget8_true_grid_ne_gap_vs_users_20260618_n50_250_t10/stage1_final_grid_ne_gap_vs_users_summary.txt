@@ -1,0 +1,22 @@
+config = configs/stage1_vbbr_q4_budget8.toml
+seed = 2026
+trials = 10
+n_users_list = 50,100,150,200,250
+methods = Proposed
+plot_statistic = median_iqr
+audit_grid_points = 120
+search_objective_grid_points = 25
+stage2_method_for_pricing = DG
+gap_heatmap_csv_template = 
+gap_heatmap_reused_n_list = 
+bo_candidate_pool = 
+bo_iters = 
+ga_population_size = 
+ga_generations = 
+marl_price_levels = 
+marl_episodes = 
+marl_steps_per_episode = 
+final_grid_ne_gap_definition = max unilateral provider revenue improvement on the audit price grid with the other provider price fixed
+grid_ne_gap_evaluation_mode = Proposed runs with restricted_gap==0 are certified to have final_grid_ne_gap=0 because the audit grid is a subset of unilateral deviations; otherwise a matching gap-heatmap CSV is reused if available, and direct audit is the fallback
+recorded_metrics = final_grid_ne_gap,joint_revenue,runtime_sec,stage2_solver_calls,audit_stage2_solver_calls,total_stage2_solver_calls
+failed_runs = 0
